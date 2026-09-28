@@ -4,6 +4,10 @@
 int main(int argc,char **argv) {
     unsigned char key[256],exponent[32]={0};
     if(argc<2) return 2;
+    if(!strcmp(argv[1],"menu")) {
+        char selected[64]={0}; int result=choose_country(stdin,stderr,selected);
+        printf("%d:%s\n",result,selected); return 0;
+    }
     if(!strcmp(argv[1],"dh")) {
         if(argc!=3 || strlen(argv[2])!=64) return 2;
         for(int i=0;i<32;i++) { char s[3]={argv[2][i*2],argv[2][i*2+1],0}; exponent[i]=(unsigned char)strtoul(s,NULL,16); }

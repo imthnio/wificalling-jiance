@@ -22,10 +22,15 @@ f=$(mktemp) && { if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-t
 
 入口会从固定提交下载对应 CPU 的静态程序，校验内置 SHA-256，再运行；结束后删除临时文件。下载失败、校验失败和执行失败会返回非零状态，不会输出假的“检测完成”。旧的 `curl .../check.sh | bash` 调用仍兼容，但建议使用上面的先下载、成功后再执行方式。
 
-只查自己的运营商会更快。下载入口文件后执行：
+默认运行先显示国家菜单：输入编号或中文国家名，只检测该国；空输入或输错会重新询问，输入 `q` 退出，只有输入 `0` 才检测全部。请选择 **手机卡所属国家**，不是 VPS 的机房国家。支持美国（T-Mobile、AT&T、Verizon）和加拿大（Rogers、Bell、TELUS）。
+
+通过 `curl ... | sh` 运行也会从终端读取选择；没有交互终端时明确报错并提示参数，不会悄悄扫描全部。自动运行可跳过菜单：
 
 ```sh
-sh check.sh --filter 英国
+sh check.sh --country 英国
+sh check.sh --country 美国
+sh check.sh --country 加拿大
+sh check.sh --all  # 明确选择全部国家
 sh check.sh --filter T-Mobile
 sh check.sh --list
 ```
@@ -37,7 +42,7 @@ sh check.sh --host epdg.epc.mnc030.mcc234.pub.3gppnetwork.org
 sh check.sh --filter 德国 --dns 1.1.1.1 --timeout 2000
 ```
 
-`--timeout` 的单位是毫秒，范围 1–10000，默认 1500。串行检测 39 个候选目标，每个最多检查两个不同 IPv4。默认最差等待预算约 8 分钟（所有 DNS 和端口均超时），实际时间取决于网络；不再承诺全部检测只要半分钟。
+`--timeout` 的单位是毫秒，范围 1–10000，默认 1500。选择全部时串行检测 42 个候选目标，每个最多检查两个不同 IPv4。全量最差等待预算约 9 分钟（所有 DNS 和端口均超时），实际时间取决于网络；不再承诺全部检测只要半分钟。
 
 ## 为什么适合 64 MB NAT 小机
 
@@ -75,7 +80,7 @@ chmod +x check-linux-x86_64
 
 “双端口响应”要求**同一个 IP** 的两个端口都收到有效响应。探测没有 SIM 凭据，也不进行 IKE_AUTH、IMS 注册或通话；响应尚未通过身份认证。它也不检测 IPv6、NAT64、手机到 VPS 的隧道、UDP 长连接保持或运营商账户资格。实际使用仍需手机支持、号码开通、必要的 UDP 转发以及真实通话验证。
 
-内置名单保留原有 39 个运营商标签，按 `epdg.epc.mncXXX.mccYYY.pub.3gppnetwork.org` 构造**候选**域名；不是运营商现网地址的认证目录。不同 SIM、MVNO 或运营商配置可能使用不同网关，可通过 `--host` 指定。删除了原来没有依据的 MCC/MNC 反序域名尝试。
+内置名单有 42 个运营商标签，按 `epdg.epc.mncXXX.mccYYY.pub.3gppnetwork.org` 构造**候选**域名；不是运营商现网地址的认证目录。不同 SIM、MVNO 或运营商配置可能使用不同网关，可通过 `--host` 指定。删除了原来没有依据的 MCC/MNC 反序域名尝试。
 
 DNS 优先读取 `/etc/resolv.conf` 的两个可识别解析器，再尝试 1.1.1.1 / 8.8.8.8；指定 `--dns` 后只用指定地址。自行解析 A / CNAME，校验来源、事务 ID、问题及记录所属域名。当前不实现 TCP DNS 回退、搜索域或 `/etc/hosts`；截断响应不会被误认为成功，而会尝试下一解析器。只支持全限定域名和 IPv4 目标。
 
@@ -113,3 +118,5 @@ GitHub Actions 配置包含：协议和下载入口回归、ASan/UBSan、二进�
 - [IETF RFC 3526 — MODP groups](https://www.rfc-editor.org/rfc/rfc3526.html)：group 14 的 2048 位素数。
 
 这些是协议标准，不是运营商现时可用性的保证；运营商策略和实际网络状态只能在目标出口验证。
+
+加拿大候选 PLMN：Rogers 302-720、Bell 302-610、TELUS 302-220。代码依据 [加拿大号码管理机构当前 MNC 名单](https://cnac.ca/data/MNC_Codes.htm)；PLMN 分配不等于现网 ePDG 可用性证明，实际 SIM 可能使用不同网关。
