@@ -2,22 +2,22 @@
 
 检查 **VPS 到运营商 ePDG 的 IPv4 UDP 500 / 4500 返回路径**。收到与本次请求匹配的 IKEv2 响应，才计为“有效响应”。这是网络诊断工具；**不能证明 SIM 已开通 VoWiFi、手机已注册或实际电话一定可用**。
 
-## 修复分支与离线运行
+## 离线运行
 
-本修复包以 2026-09-29 拉取的主分支 `44863e3` 为审查对象，复用了 `99630fd` 的低内存实现并补齐响应校验。修复发布在 `fix/protocol-audit` 分支，尚未合并 main。下方在线命令直接取得修复分支入口；也可以上传并解压整个修复包，在目录内执行：
+上传并解压整个项目文件，在目录内执行：
 
 ```sh
 sh run-local.sh --filter 英国
 ```
 
-这会校验并运行包内二进制，不下载 GitHub main 文件。
+这会校验并运行包内二进制，无需在线下载。
 
 ## 一键运行
 
 用 SSH 登录 VPS，复制执行。无需 root，无需安装 Python、Bash、Docker 或编译器：
 
 ```sh
-f=$(mktemp) && { if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/imthnio/wificalling-jiance/fix/protocol-audit/check.sh -o "$f"; else wget -T 30 -q -O "$f" https://raw.githubusercontent.com/imthnio/wificalling-jiance/fix/protocol-audit/check.sh; fi; } && sh "$f"; r=$?; [ -z "${f:-}" ] || rm -f "$f"; (exit "$r")
+f=$(mktemp) && { if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/imthnio/wificalling-jiance/main/check.sh -o "$f"; else wget -T 30 -q -O "$f" https://raw.githubusercontent.com/imthnio/wificalling-jiance/main/check.sh; fi; } && sh "$f"; r=$?; [ -z "${f:-}" ] || rm -f "$f"; (exit "$r")
 ```
 
 入口会从固定提交下载对应 CPU 的静态程序，校验内置 SHA-256，再运行；结束后删除临时文件。下载失败、校验失败和执行失败会返回非零状态，不会输出假的“检测完成”。旧的 `curl .../check.sh | bash` 调用仍兼容，但建议使用上面的先下载、成功后再执行方式。

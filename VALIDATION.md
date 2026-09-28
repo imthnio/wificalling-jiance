@@ -9,8 +9,10 @@ Reviewed current main: `44863e3`; implementation reused from `99630fd` and audit
 - Normal SA_INIT additionally requires a nonzero responder SPI, one group-14 KE payload of the correct length, and nonduplicated SA/KE/Nonce payloads.
 - Both IKE and DNS receive paths reject MSG_TRUNC rather than inspecting a truncated prefix.
 - Built with Zig 0.13.0: static stripped Linux x86_64 (60,008 bytes) and aarch64 (67,536 bytes), SHA-256 checked against manifest and launcher.
-- No Docker runtime here: this revision has NOT been executed in the 64 MiB Linux container matrix. The included workflow and test script are available, but their existence is not a pass.
+- GitHub Actions run 36469202413 passed on commit 589535a77079f6c8709251582b276972f5872ee1: regressions, ASan/UBSan, hashes, Alpine 3.22 / Debian 13 / Ubuntu 24.04 under 64 MiB/no swap, and byte-identical source rebuild. This is container evidence, not an actual NAT VPS test.
 - Actual NAT VPS, carrier/SIM registration, IPv6, and calls were NOT tested.
-- run-local.sh checks the bundled SHA256SUMS and runs the matching Linux binary. The repair is on fix/protocol-audit; GitHub main remains unchanged. The README command downloads the repair branch launcher, which pins its binaries to a fixed commit.
+- run-local.sh checks the bundled SHA256SUMS and runs the matching Linux binary. The README command uses main; the launcher pins its binaries to a fixed, verified commit.
 
 Only source, tests, build/CI scripts, documentation, notices and generated binaries are distributed. No credentials or VPS data.
+
+CI evidence: https://github.com/imthnio/wificalling-jiance/actions/runs/36469202413
