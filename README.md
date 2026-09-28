@@ -1,17 +1,5 @@
 # WiFi Calling (VoWiFi) 网络探测
 
-检查 **VPS 到运营商 ePDG 的 IPv4 UDP 500 / 4500 返回路径**。收到与本次请求匹配的 IKEv2 响应，才计为“有效响应”。这是网络诊断工具；**不能证明 SIM 已开通 VoWiFi、手机已注册或实际电话一定可用**。
-
-## 离线运行
-
-上传并解压整个项目文件，在目录内执行：
-
-```sh
-sh run-local.sh --filter 英国
-```
-
-这会校验并运行包内二进制，无需在线下载。
-
 ## 一键运行
 
 用 SSH 登录 VPS，复制执行。无需 root，无需安装 Python、Bash、Docker 或编译器：
