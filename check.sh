@@ -149,10 +149,13 @@ CARRIERS=(
 "菲律宾 Globe|515|002" "菲律宾 Smart|515|003" "菲律宾 DITO|515|066"
 )
 
-# 测一家运营商:域名解析 -> UDP 500 握手 -> UDP 4500 握手,输出一行结果
+# 测一家运营商,输出一行极简结果:✅ 名字(能用)或 ❌ 名字(不能用)
+# (两个端口都通才算"能用",其他情况一律"不能用",不给小白看 UDP 500/4500 这类术语)
+# 用法: check_carrier "德国 Telekom|262|001" /tmp/xxx 1
 check_carrier() {
-  local name mcc mnc rest h ip r500 r4500 st
+  local name mcc mnc rest h ip tmpdir idx
   name=${1%%|*}; rest=${1#*|}; mcc=${rest%%|*}; mnc=${rest##*|}
+  tmpdir=$2; idx=$3
   ip=""
   # 个别运营商域名两种写法都试一下,哪个能解析用哪个
   for h in "epdg.epc.mnc${mnc}.mcc${mcc}.pub.3gppnetwork.org" \
@@ -161,13 +164,15 @@ check_carrier() {
     [ -n "$ip" ] && break
   done
   if [ -z "$ip" ]; then
-    echo "  [$name] 域名解析失败 ✗ (该运营商可能没公开 ePDG,看别家就行)"
+    echo "  ❌ $name"
+    touch "$tmpdir/$idx.dnsfail" 2>/dev/null  # 记一笔:这家是域名没解析出来
     return
   fi
-  ike_probe "$ip" 500  && r500="✓" || r500="✗"   # IKE 标准端口
-  ike_probe "$ip" 4500 && r4500="✓" || r4500="✗"  # IKE NAT 穿透端口
-  [ "$r500" = "✓" ] && [ "$r4500" = "✓" ] && st="支持" || st="部分/不支持"
-  echo "  [$name] UDP 500 $r500  UDP 4500 $r4500  -> $st"
+  if ike_probe "$ip" 500 && ike_probe "$ip" 4500; then
+    echo "  ✅ $name"
+  else
+    echo "  ❌ $name"
+  fi
 }
 
 # ---------------- 正式开始 ----------------
@@ -199,62 +204,72 @@ fi
 echo "第 1 步:测试 UDP 出站是否被拦截(向 8.8.8.8 发 DNS 查询)..."
 if udp_check; then
   udp_ok=1
-  echo "  UDP 出站: 正常 ✓"
+  echo "  UDP 出站: ✅ 正常"
 else
   udp_ok=0
-  echo "  UDP 出站: 被拦截 ✗ (后面大概率全灭)"
+  echo "  UDP 出站: ❌ 被拦截 (后面大概率全灭)"
 fi
 echo ""
 
 total=${#CARRIERS[@]}
-echo "第 2 步:逐个探测 $total 家运营商的 ePDG 网关(约需半分钟)..."
-echo ""
+echo "第 2 步:正在检测 $total 家运营商(约需半分钟)..."
 
 # 并发探测:每批 8 个,照顾小内存机器;每家的结果先存临时文件,最后按顺序打印
 tmpdir=$(mktemp -d 2>/dev/null) || { tmpdir="/tmp/wificheck.$$"; mkdir -p "$tmpdir"; }
 i=0; batch=0
 for c in "${CARRIERS[@]}"; do
   i=$((i+1)); batch=$((batch+1))
-  ( check_carrier "$c" > "$tmpdir/$i" 2>/dev/null ) &
-  if [ "$batch" -ge 8 ]; then wait; batch=0; fi
+  ( check_carrier "$c" "$tmpdir" "$i" > "$tmpdir/$i" 2>/dev/null ) &
+  if [ "$batch" -ge 8 ]; then
+    wait
+    echo "  检测中... $i/$total"
+    batch=0
+  fi
 done
 wait
+[ "$batch" -gt 0 ] && echo "  检测中... $i/$total 完成!"
+
+echo ""
+echo "------------------------------ 检测结果 ------------------------------"
+echo "  (✅=这家能用 ❌=这家不能用)"
 j=0
 while [ "$j" -lt "$i" ]; do
   j=$((j+1))
   cat "$tmpdir/$j" 2>/dev/null
 done
 
-# 统计:几家完全支持、几家域名解析失败
-ok_list=$(grep -h -- "-> 支持" "$tmpdir"/* 2>/dev/null | sed 's/^  \[//;s/\].*//')
+# 统计:✅ 的就是能用的;*.dnsfail 标记的是域名没解析出来的
+# (用来区分"DNS 被劫持"和"运营商不理我们"这两种不同的不能用)
+ok_list=$(grep -h "✅" "$tmpdir"/[0-9]* 2>/dev/null | sed 's/^  ✅ //')
 ok_count=$(printf '%s' "$ok_list" | grep -c .)
-dns_fail=$(grep -h "域名解析失败" "$tmpdir"/* 2>/dev/null | wc -l)
+dns_fail=$(ls "$tmpdir"/*.dnsfail 2>/dev/null | wc -l)
 rm -rf "$tmpdir"
 
 echo ""
-echo "============================================================"
-echo "  检测结论"
-echo "============================================================"
-echo "  完全支持的运营商: $ok_count / $total 家"
+echo "================================= 总结 =================================="
+echo "  ✅ 能用 WiFi 打电话: $ok_count 家"
 if [ "$ok_count" -gt 0 ]; then
-  echo "  名单: $(printf '%s\n' "$ok_list" | sed ':a;N;$!ba;s/\n/、/g')"
+  echo "     $(printf '%s\n' "$ok_list" | sed ':a;N;$!ba;s/\n/、/g')"
 fi
+echo "  ❌ 不能用: $((total - ok_count)) 家"
 echo ""
 if [ "$udp_ok" = "0" ]; then
-  echo "  ❌ 这台 VPS 的 UDP 出站被拦截了,WiFi Calling 用不了。"
-  echo "     去服务商后台检查防火墙 / 安全组,把 UDP 出站放行,或换一台 VPS。"
+  echo "  检测结论: ❌ 不能用"
+  echo "  原因:这台 VPS 把 UDP 全拦了,WiFi 打电话必须走 UDP,路被堵死了。"
+  echo "  怎么办:去服务商后台检查防火墙/安全组,把 UDP 出站放开;搞不定就换一台 VPS。"
 elif [ "$ok_count" -gt 0 ]; then
-  echo "  ✅ 这台 VPS 的网络支持 WiFi Calling,上面打勾的运营商都能用。"
-  echo "     手机端记得:运营商已开通 VoWiFi + 手机支持 + 打开 WiFi 通话开关。"
+  echo "  检测结论: ✅ 能用!"
+  echo "  上面 ✅ 的运营商的卡,在这台 VPS 的网络下都能用 WiFi 打电话。"
+  echo "  手机端还要满足:运营商已开通 WiFi 通话 + 手机支持 + 设置里打开开关。"
 elif [ "$dns_fail" -eq "$total" ]; then
-  echo "  ⚠️ 所有 ePDG 域名都解析失败,多半是这台 VPS 的 DNS 被劫持/污染。"
-  echo "     把系统 DNS 换成 8.8.8.8 / 1.1.1.1 再跑一次试试。"
+  echo "  检测结论: ❌ 不能用"
+  echo "  原因:这台 VPS 查不到任何一家运营商服务器的地址,DNS 被劫持/污染了。"
+  echo "  怎么办:把 VPS 的 DNS 换成 8.8.8.8 / 1.1.1.1,再跑一次。"
 else
-  echo "  ⚠️ UDP 是通的,但没有任何一家运营商的 ePDG 回应。"
-  echo "     最可能的原因是运营商那边屏蔽了机房 IP 或境外 IP"
-  echo "     (这是运营商侧的限制,不是 VPS 防火墙的问题)。"
-  echo "     可以试试:换一个离用户更近的机房、或换住宅 IP 线路的 VPS。"
+  echo "  检测结论: ❌ 不能用"
+  echo "  原因:UDP 是通的,但运营商那边不理我们,多半是把机房 IP 或国外 IP 拉黑了。"
+  echo "  怎么办:换个离用户近的机房,或换住宅 IP 线路的 VPS 再测。"
 fi
-echo "============================================================"
+echo "========================================================================="
 echo ""
 echo "检测完成。"
