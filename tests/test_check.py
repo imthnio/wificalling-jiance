@@ -2,6 +2,9 @@
 """Deterministic protocol regressions; only loopback networking, no carrier traffic."""
 import os
 from pathlib import Path
+import pty
+import select
+import signal
 import random
 import re
 import socket
@@ -195,8 +198,78 @@ class ProtocolTests(unittest.TestCase):
         for args in (['--unknown'],['--timeout','-1'],['--timeout','10001'],['--timeout','1x'],['--dns','nonsense'],['--host','a'*254]):
             self.assertEqual(subprocess.run([BINARY,*args],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode,2)
 
+    def test_country_menu_selection_retry_cancel_and_eof(self):
+        for data, expected in ((b'5\n', '1:英国'), ('加拿大\n'.encode(), '1:加拿大'),
+                               ('美国\n'.encode(), '1:美国'), (b'0\n','0:'),
+                               (b'q\n','-1:'), (b'', '-1:'),
+                               (b'\n999\nbad\n5\n','1:英国'),
+                               (b'x'*200+b'\n5\n','1:英国')):
+            p=subprocess.run([HARNESS,'menu'],input=data,capture_output=True,check=True)
+            self.assertEqual(p.stdout.decode().strip(),expected)
+            self.assertIn('手机卡所属国家',p.stderr.decode())
+            self.assertIn('加拿大（3 家）',p.stderr.decode())
+            self.assertIn('美国（3 家）',p.stderr.decode())
+
+    def test_country_filter_and_all_are_explicit(self):
+        for country in ('美国','加拿大','英国'):
+            p=subprocess.run([BINARY,'--country',country,'--dns','127.0.0.1','--timeout','1'],
+                             capture_output=True,text=True,timeout=10)
+            self.assertEqual(p.returncode,0,p.stderr)
+            rows=[row for row in p.stdout.splitlines() if row.startswith('[')]
+            self.assertEqual(len(rows),4 if country=='英国' else 3)
+            self.assertTrue(all(row.startswith('['+country+' ') for row in rows))
+        p=subprocess.run([BINARY,'--all','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=10)
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertIn('42 个候选目标',p.stdout)
+
+    def test_piped_stdin_still_reads_country_from_terminal(self):
+        pid,fd=pty.fork()
+        if pid==0:
+            os.execl('/bin/sh','sh','-c',
+                     'printf ignored | "$1" --dns 127.0.0.1 --timeout 1','sh',BINARY)
+        output=b''; sent=False; finished=False
+        try:
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                if select.select([fd],[],[],.1)[0]:
+                    try: chunk=os.read(fd,4096)
+                    except OSError: break
+                    if not chunk: break
+                    output+=chunk
+                    if not sent and '输入编号或国家名称：'.encode() in output:
+                        os.write(fd,'加拿大\n'.encode()); sent=True
+                done,status=os.waitpid(pid,os.WNOHANG)
+                if done:
+                    finished=True
+                    self.assertEqual(os.waitstatus_to_exitcode(status),0)
+                    break
+            text=output.decode(errors='replace')
+            self.assertTrue(sent,text)
+            self.assertIn('3 个候选目标',text)
+            self.assertIn('[加拿大 Rogers]',text)
+            self.assertNotIn('[美国 ',text)
+        finally:
+            os.close(fd)
+            if not finished:
+                try: os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(pid,0)
+
+    def test_no_terminal_does_not_start_full_scan(self):
+        p=subprocess.run([BINARY],stdin=subprocess.DEVNULL,capture_output=True,text=True,start_new_session=True,timeout=3)
+        self.assertEqual(p.returncode,2)
+        self.assertIn('--country',p.stderr)
+        self.assertNotIn('第 1 步',p.stdout)
+
+    def test_country_bad_args_fail_before_network(self):
+        for args in (['--country','不存在'],['--country',''],['--filter',''],
+                     ['--all','--country','英国'],['--country','美国','--filter','加拿大']):
+            p=subprocess.run([BINARY,*args],capture_output=True,text=True,timeout=3)
+            self.assertEqual(p.returncode,2)
+            self.assertNotIn('第 1 步',p.stdout)
+
     def test_carrier_list_and_version(self):
-        self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),39)
-        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.0.0')
+        self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),42)
+        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.1.0')
 
 if __name__=='__main__': unittest.main(verbosity=2)

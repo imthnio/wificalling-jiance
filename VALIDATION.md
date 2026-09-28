@@ -1,18 +1,11 @@
-# Validation — 2026-09-29
+# Validation — 2.1.0 country menu
 
-Reviewed current main: `44863e3`; implementation reused from `99630fd` and audited further.
-
-- 34 tests pass on macOS ARM64: 22 protocol/CLI and 12 launcher/distribution tests.
-- All 34 tests also pass with AddressSanitizer and UndefinedBehaviorSanitizer.
-- Clang static analysis and C99 compilation with -Wall -Wextra -Werror pass.
-- New notification-only and oversized UDP regressions were run against the old native implementation and failed as expected (false-positive acceptance); the repaired implementation rejects them.
-- Normal SA_INIT additionally requires a nonzero responder SPI, one group-14 KE payload of the correct length, and nonduplicated SA/KE/Nonce payloads.
-- Both IKE and DNS receive paths reject MSG_TRUNC rather than inspecting a truncated prefix.
-- Built with Zig 0.13.0: static stripped Linux x86_64 (60,008 bytes) and aarch64 (67,536 bytes), SHA-256 checked against manifest and launcher.
-- GitHub Actions run 36469202413 passed on commit 589535a77079f6c8709251582b276972f5872ee1: regressions, ASan/UBSan, hashes, Alpine 3.22 / Debian 13 / Ubuntu 24.04 under 64 MiB/no swap, and byte-identical source rebuild. This is container evidence, not an actual NAT VPS test.
-- Actual NAT VPS, carrier/SIM registration, IPv6, and calls were NOT tested.
-- run-local.sh checks the bundled SHA256SUMS and runs the matching Linux binary. The README command uses main; the launcher pins its binaries to a fixed, verified commit.
-
-Only source, tests, build/CI scripts, documentation, notices and generated binaries are distributed. No credentials or VPS data.
-
-CI evidence: https://github.com/imthnio/wificalling-jiance/actions/runs/36469202413
+- 39 local macOS ARM64 regression tests passed (27 protocol/CLI/menu tests and 12 launcher tests).
+- Menu tests cover number/name selection, invalid/empty/oversized input, cancellation, EOF, explicit all-country mode, and conflicting arguments.
+- A pseudo-terminal test verifies country input still works when standard input is a pipe. No controlling terminal without a selector returns a clear error before network probes.
+- Country integration tests use loopback DNS only: USA/Canada select exactly 3 carriers; UK selects 4; --all selects 42.
+- USA retains T-Mobile/AT&T/Verizon. Canada adds Rogers 302-720, Bell 302-610, TELUS 302-220, checked against https://cnac.ca/data/MNC_Codes.htm . These are PLMN-derived candidates, not verified service endpoints.
+- Zig 0.13.0 builds static Linux x86_64 and aarch64 binaries; SHA256SUMS and launcher hashes are regenerated together.
+- GitHub Actions tests protocol/launcher regressions, ASan/UBSan, hashes, 64 MiB/no-swap Linux containers and reproducible builds. Check the run for the exact current commit.
+- The earlier 2.0.0 baseline passed https://github.com/imthnio/wificalling-jiance/actions/runs/36469713502 . That older run is not evidence for this new revision.
+- Actual NAT VPS, SIM registration, real calls and IPv6 remain untested.

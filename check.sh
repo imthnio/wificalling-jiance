@@ -1,18 +1,18 @@
 #!/bin/sh
 # WiFi Calling v2: tiny static native probe, no package manager or root required.
 set -eu
-HASH_x86_64=814348c58cdd771a34af0b52ba31516c89040e55656720ca0081bf2d6ccbc0a7
-HASH_aarch64=c37d4a163865e9680a81e472cd085583486dbfefad8a5e5d61454aa86db1959e
+HASH_x86_64=24f2253abecc534b37b78eb1ff693b3dbb4bf0bfd15a6e1c54cc103981c8eaad
+HASH_aarch64=9d164a51802d710e42e5441e88d6d5fa3ca7e4083c8ab149822922c978921d52
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 if [ "${1:-}" = --help ]; then
-    printf '%s\n' 'WiFi Calling 2.0.0 / 64 MB 低内存设计' \
-        '用法: sh check.sh [--filter 英国] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]' \
-        '也支持 --list、--version；默认串行 IPv4 检测，完整扫描可能需要数分钟。' \
+    printf '%s\n' 'WiFi Calling 2.1.0 / 64 MB 低内存设计' \
+        '用法: sh check.sh [--country 英国 | --all | --filter 英国] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]' \
+        '默认先询问手机卡所属国家；--country 跳过菜单，--all 才扫描全部。' \
         'Linux x86_64 / aarch64；只需 curl 或 wget，以及 sha256sum 或 shasum。' \
         '不安装软件、不修改防火墙、不创建 swap；结果仅表示 IKE 返回路径证据。'
     exit 0
 fi
-if [ "${1:-}" = --version ]; then printf '%s\n' 2.0.0; exit 0; fi
+if [ "${1:-}" = --version ]; then printf '%s\n' 2.1.0; exit 0; fi
 [ "$(uname -s)" = Linux ] || fail '此入口用于 Linux VPS。其他系统可从 src/check.c 自行编译。'
 case "$(uname -m)" in
     x86_64|amd64) arch=x86_64; expected=$HASH_x86_64 ;;

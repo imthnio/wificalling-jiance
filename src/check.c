@@ -14,12 +14,13 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "2.0.0"
+#define VERSION "2.1.0"
 #define MAX_IPS 2
 #define MAX_DNS 4
 #define DNS_SIZE 4096
 #define IKE_SIZE 376
 #include "carriers.h"
+#define CARRIER_COUNT (sizeof carriers/sizeof *carriers)
 
 static uint16_t rd16(const unsigned char *p) { return (uint16_t)((p[0]<<8)|p[1]); }
 static uint32_t rd32(const unsigned char *p) { return ((uint32_t)rd16(p)<<16)|rd16(p+2); }
@@ -333,17 +334,62 @@ static unsigned positive_int(const char *s,unsigned max) {
     for(;*s;s++) { if(*s<'0'||*s>'9' || value>max/10) return 0; value=value*10+(unsigned)(*s-'0'); if(value>max) return 0; }
     return value;
 }
+/* Country names come from the existing carrier labels; no duplicate catalog. */
+static int country_names(char names[CARRIER_COUNT][64]) {
+    int count=0;
+    for(size_t i=0;i<sizeof carriers/sizeof *carriers;i++) {
+        size_t n=strcspn(carriers[i].name," ");
+        if(n>=64) continue;
+        int found=0;
+        for(int j=0;j<count;j++) if(strlen(names[j])==n && !memcmp(names[j],carriers[i].name,n)) found=1;
+        if(!found) { memcpy(names[count],carriers[i].name,n); names[count++][n]=0; }
+    }
+    return count;
+}
+static int country_matches(const char *name,const char *country) {
+    size_t n=strlen(country);
+    return !strncmp(name,country,n) && name[n]==' ';
+}
+/* 1: selected country; 0: explicitly all; -1: cancel/EOF. */
+static int choose_country(FILE *input,FILE *output,char selected[64]) {
+    char names[CARRIER_COUNT][64]; int count=country_names(names);
+    fputs("请选择要检测的手机卡所属国家（不是 VPS 所在国家）：\n",output);
+    for(int i=0;i<count;i++) {
+        int carriers_count=0;
+        for(size_t j=0;j<sizeof carriers/sizeof *carriers;j++) carriers_count+=country_matches(carriers[j].name,names[i]);
+        fprintf(output,"  %2d. %s（%d 家）\n",i+1,names[i],carriers_count);
+    }
+    fputs("   0. 全部国家（较慢）\n   q. 退出\n",output);
+    for(;;) {
+        char line[128];
+        fputs("输入编号或国家名称：",output); fflush(output);
+        if(!fgets(line,sizeof line,input)) return -1;
+        if(!strchr(line,'\n') && !feof(input)) {
+            int c; while((c=fgetc(input))!=EOF && c!='\n') {}
+            fputs("输入过长，请重新选择。\n",output); continue;
+        }
+        char *value=line; while(isspace((unsigned char)*value)) value++;
+        size_t n=strlen(value); while(n && isspace((unsigned char)value[n-1])) value[--n]=0;
+        if(!strcmp(value,"q") || !strcmp(value,"Q")) return -1;
+        if(!strcmp(value,"0")) return 0;
+        unsigned index=positive_int(value,(unsigned)count);
+        for(int i=0;i<count;i++) if((unsigned)(i+1)==index || !strcmp(value,names[i])) {
+            snprintf(selected,64,"%s",names[i]); return 1;
+        }
+        fputs("无效选择，请输入列表中的编号或国家名称。\n",output);
+    }
+}
 static void usage(void) {
     puts("WiFi Calling 网络探测 " VERSION "（低内存 / IPv4）\n"
-         "用法: check [--filter 名称] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]\n"
+         "用法: check [--country 国家 | --all | --filter 名称] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]\n"
          "      check --list | --version | --help\n"
-         "默认串行检测，每次请求最多等待 1500 毫秒；完整扫描可能需要数分钟。\n"
+         "默认先选择手机卡所属国家；--country 英国 跳过菜单，--all 检测全部。\n"
          "--filter 示例: 德国、英国、T-Mobile；--host 覆盖默认运营商候选名单。\n"
          "--dns 仅使用指定解析器（可重复最多4个）；--timeout 范围 1..10000。\n"
          "只验证未认证 IKEv2 响应，不能证明 SIM 注册、通话、IPv6 或代理 UDP 转发可用。");
 }
 int main(int argc,char **argv) {
-    const char *filter=NULL,*host=NULL; int timeout_ms=1500;
+    const char *filter=NULL,*host=NULL,*country=NULL; char selected[64]; int timeout_ms=1500,all=0;
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--help")) { usage(); return 0; }
         if(!strcmp(argv[i],"--version")) { puts(VERSION); return 0; }
@@ -351,13 +397,35 @@ int main(int argc,char **argv) {
             for(size_t c=0;c<sizeof carriers/sizeof *carriers;c++) printf("%s  epdg.epc.mnc%s.mcc%s.pub.3gppnetwork.org\n",carriers[c].name,carriers[c].mnc,carriers[c].mcc);
             return 0;
         }
+        if(!strcmp(argv[i],"--all")) { all=1; continue; }
         if(i+1>=argc) { usage(); return 2; }
         const char *opt=argv[i++],*value=argv[i];
         if(!strcmp(opt,"--filter")) filter=value;
+        else if(!strcmp(opt,"--country")) country=value;
         else if(!strcmp(opt,"--host")) host=value;
         else if(!strcmp(opt,"--dns")) { if(resolver_count>=MAX_DNS || !add_resolver(value)) { fputs("无效 DNS 地址或超过4个\n",stderr); return 2; } }
         else if(!strcmp(opt,"--timeout")) { unsigned n=positive_int(value,10000); if(!n) return 2; timeout_ms=(int)n; }
         else { usage(); return 2; }
+    }
+    if((filter!=NULL)+(host!=NULL)+(country!=NULL)+all>1 || (filter && !*filter)) {
+        fputs("--country、--filter、--host、--all 请只选一种，筛选内容不能为空。\n",stderr); return 2;
+    }
+    if(country) {
+        char names[CARRIER_COUNT][64]; int n=country_names(names),found=0;
+        for(int i=0;i<n;i++) if(!strcmp(country,names[i])) found=1;
+        if(!found) { fputs("未知国家；不带筛选参数运行可查看国家菜单。\n",stderr); return 2; }
+    }
+    if(!country && !filter && !host && !all) {
+        /* Piped installers consume stdin themselves; read the controlling tty. */
+        FILE *terminal=fopen("/dev/tty","r+");
+        FILE *input=terminal?terminal:(isatty(STDIN_FILENO)?stdin:NULL);
+        if(!input) {
+            fputs("没有交互终端；请指定 --country 英国、--filter 名称、--host 地址或 --all。\n",stderr); return 2;
+        }
+        int choice=choose_country(input,terminal?terminal:stderr,selected);
+        if(terminal) fclose(terminal);
+        if(choice<0) { puts("已取消检测。"); return 0; }
+        if(choice) country=selected;
     }
     if(host) { unsigned char q[512]; if(!dns_request(q,host,0)) { fputs("无效目标地址\n",stderr); return 2; } }
     if(!resolver_count) load_resolvers();
@@ -375,6 +443,7 @@ int main(int argc,char **argv) {
     for(size_t i=0;i<count;i++) {
         const char *name=host?host:carriers[i].name;
         if(!host && filter && !strstr(name,filter)) continue;
+        if(!host && country && !country_matches(name,country)) continue;
         total++;
         char candidate[254];
         if(host) snprintf(candidate,sizeof candidate,"%s",host);
