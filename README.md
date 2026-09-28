@@ -51,6 +51,7 @@ curl -fsSL https://raw.githubusercontent.com/imthnio/wificalling-jiance/main/che
 | ⚠️ UDP 是通的，但没有任何一家运营商回应 | UDP 没问题，是运营商那边把机房 IP 或国外 IP 拉黑了，不是你的错 | 换个离用户近的机房，或换住宅 IP 线路的 VPS 再测 |
 | ⚠️ 所有 ePDG 域名都解析失败 | VPS 的 DNS 被劫持 / 污染了，运营商服务器的地址查不出来 | 把 VPS 的 DNS 换成 8.8.8.8 / 1.1.1.1，再跑一次 |
 | 只有一两家显示"域名解析失败"，其他都正常 | 这几家运营商没公开标准地址，不影响结论 | 不用管，看大多数的结果就行 |
+| 一开始就报错 `python3: command not found`，前面还有个 `Killed` | VPS 内存太小，装 python3 时被系统杀掉了（多见于 256MB / 512MB 小鸡） | 换内存大点的 VPS（512MB 以上）再测；或手动装一次试试，还是 Killed 就只能换机器 |
 
 ## 常见疑问
 
