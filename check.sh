@@ -41,7 +41,23 @@ if ! command -v python3 >/dev/null 2>&1; then
   fi
 fi
 
-# ---------- 第 2 步:把真正的检测逻辑交给下面的 python 代码 ----------
+# ---------- 第 2 步:确认 python3 真的装好了,没装好就直接报错退出 ----------
+# (内存太小的 VPS 上,上面那步安装可能被系统 Kill 掉。这里必须拦下来,
+#  不能带着"python3 不存在"继续往下跑,免得输出误导人)
+if ! command -v python3 >/dev/null 2>&1; then
+  echo ""
+  echo "❌ python3 没装上,检测无法继续。"
+  echo "最可能的原因:这台 VPS 内存太小,安装 python3 时被系统强制结束了"
+  echo "(上面那行 Killed 就是证据,常见于 256MB / 512MB 的小内存机器)。"
+  echo ""
+  echo "解决办法(二选一):"
+  echo "  1. 换一台内存大点的 VPS(建议 512MB 以上)再跑一键命令;"
+  echo "  2. 手动装一次试试(Alpine: apk add python3 ; Debian/Ubuntu: apt install python3),"
+  echo "     如果还是被 Killed,就是内存不够,只能换机器。"
+  exit 1
+fi
+
+# ---------- 第 3 步:把真正的检测逻辑交给下面的 python 代码 ----------
 python3 << 'PYEOF'
 import os, re, json, random, socket, struct, urllib.request
 from concurrent.futures import ThreadPoolExecutor
