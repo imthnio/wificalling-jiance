@@ -23,7 +23,7 @@ if command -v sha256sum >/dev/null 2>&1; then hasher=sha256sum
 elif command -v shasum >/dev/null 2>&1; then hasher=shasum
 else fail '缺少 SHA-256 校验工具，已停止；需要 sha256sum（BusyBox 通常自带）或 shasum。'
 fi
-base=${WIFICALLING_BASE_URL:-https://raw.githubusercontent.com/imthnio/wificalling-jiance/main}
+base=${WIFICALLING_BASE_URL:-https://raw.githubusercontent.com/imthnio/wificalling-jiance/9aaa538d9394f148acf121ac8258477742a5d646}
 case "$base" in https://*) ;; *) fail '下载地址必须使用 HTTPS。' ;; esac
 umask 077
 scratch=$(mktemp -d "${WIFICALLING_TMPDIR:-${TMPDIR:-/tmp}}/wificalling.XXXXXX") || fail '无法创建临时目录。'
