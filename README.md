@@ -1,4 +1,4 @@
-# WiFi Calling (VoWiFi) 网络探测 — 64 MB 低内存版
+# WiFi Calling (VoWiFi) 网络探测
 
 检查 **VPS 到运营商 ePDG 的 IPv4 UDP 500 / 4500 返回路径**。收到与本次请求匹配的 IKEv2 响应，才计为“有效响应”。这是网络诊断工具；**不能证明 SIM 已开通 VoWiFi、手机已注册或实际电话一定可用**。
 
