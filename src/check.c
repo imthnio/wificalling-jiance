@@ -374,7 +374,7 @@ static int choose_country(FILE *input,FILE *output,char selected[64]) {
         if(!strcmp(value,"0")) return 0;
         unsigned index=positive_int(value,(unsigned)count);
         for(int i=0;i<count;i++) if((unsigned)(i+1)==index || !strcmp(value,names[i])) {
-            snprintf(selected,64,"%s",names[i]); return 1;
+            snprintf(selected,64,"%.63s",names[i]); return 1;
         }
         fputs("无效选择，请输入列表中的编号或国家名称。\n",output);
     }
