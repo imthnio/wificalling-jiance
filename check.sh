@@ -1,8 +1,8 @@
 #!/bin/sh
 # WiFi Calling v2: tiny static native probe, no package manager or root required.
 set -eu
-HASH_x86_64=2af0d942604a51a04bb4100247dcfdeae37983422fc586cf9d588413311da094
-HASH_aarch64=4d4c66c24362256c722e30f747784ecf1fd5c3320646e1403aeb421b756f5f7b
+HASH_x86_64=814348c58cdd771a34af0b52ba31516c89040e55656720ca0081bf2d6ccbc0a7
+HASH_aarch64=c37d4a163865e9680a81e472cd085583486dbfefad8a5e5d61454aa86db1959e
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 if [ "${1:-}" = --help ]; then
     printf '%s\n' 'WiFi Calling 2.0.0 / 64 MB 低内存设计' \

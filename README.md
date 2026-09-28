@@ -2,15 +2,25 @@
 
 检查 **VPS 到运营商 ePDG 的 IPv4 UDP 500 / 4500 返回路径**。收到与本次请求匹配的 IKEv2 响应，才计为“有效响应”。这是网络诊断工具；**不能证明 SIM 已开通 VoWiFi、手机已注册或实际电话一定可用**。
 
+## 修复分支与离线运行
+
+本修复包以 2026-09-29 拉取的主分支 `44863e3` 为审查对象，复用了 `99630fd` 的低内存实现并补齐响应校验。修复发布在 `fix/protocol-audit` 分支，尚未合并 main。下方在线命令直接取得修复分支入口；也可以上传并解压整个修复包，在目录内执行：
+
+```sh
+sh run-local.sh --filter 英国
+```
+
+这会校验并运行包内二进制，不下载 GitHub main 文件。
+
 ## 一键运行
 
 用 SSH 登录 VPS，复制执行。无需 root，无需安装 Python、Bash、Docker 或编译器：
 
 ```sh
-f=$(mktemp) && { if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/imthnio/wificalling-jiance/main/check.sh -o "$f"; else wget -T 30 -q -O "$f" https://raw.githubusercontent.com/imthnio/wificalling-jiance/main/check.sh; fi; } && sh "$f"; r=$?; [ -z "${f:-}" ] || rm -f "$f"; (exit "$r")
+f=$(mktemp) && { if command -v curl >/dev/null 2>&1; then curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/imthnio/wificalling-jiance/fix/protocol-audit/check.sh -o "$f"; else wget -T 30 -q -O "$f" https://raw.githubusercontent.com/imthnio/wificalling-jiance/fix/protocol-audit/check.sh; fi; } && sh "$f"; r=$?; [ -z "${f:-}" ] || rm -f "$f"; (exit "$r")
 ```
 
-入口会选择对应 CPU 的静态程序，校验内置 SHA-256，再运行；结束后删除临时文件。下载失败、校验失败和执行失败会返回非零状态，不会输出假的“检测完成”。旧的 `curl .../check.sh | bash` 调用仍兼容，但建议使用上面的先下载、成功后再执行方式。
+入口会从固定提交下载对应 CPU 的静态程序，校验内置 SHA-256，再运行；结束后删除临时文件。下载失败、校验失败和执行失败会返回非零状态，不会输出假的“检测完成”。旧的 `curl .../check.sh | bash` 调用仍兼容，但建议使用上面的先下载、成功后再执行方式。
 
 只查自己的运营商会更快。下载入口文件后执行：
 
@@ -71,13 +81,16 @@ DNS 优先读取 `/etc/resolv.conf` 的两个可识别解析器，再尝试 1.1.
 
 ## 本次修复
 
-1. 去掉自动安装 Python 及 16 线程依赖，提供可审计源码与小型静态程序。
+1. 替换当前 Bash 的二进制单字节读取和八任务并发；复用低内存 C 实现，不安装 Python，提供可审计源码与小型静态程序。
 2. 修正 IKE 载荷链 `SA → KE → Nonce`，Transform 的后续标记，以及 KE 的长度、DH 组和保留字段。
 3. 使用 RFC 3526 group 14 的有效 DH 公钥替代无约束随机 KE 字节，随机 SPI / Nonce；算法提议为 AES-CBC-128、HMAC-SHA256 PRF / integrity。
 4. 校验响应来源、SPI、IKE 版本、交换类型、响应位、消息编号、总长度、载荷边界和 UDP 4500 的 Non-ESP Marker，忽略错误包直到超时。
 5. DNS 校验事务及问题、限制压缩指针跳转和包长度；只接受所属域名或 CNAME 链中的 A 记录。
 6. 取消“DNS 失败 = 所有 UDP 被封锁”“任意 UDP 回包 = 支持”“探测通过 = 手机一定能打电话”等错误结论。
 7. 下载失败、校验失败、未知 CPU、缺少工具、不可执行临时目录均明确报错，保留子进程退出码并清理临时文件。
+
+8. 忽略单独的状态通知；验证 COOKIE / INVALID_KE_PAYLOAD 必需数据、正常响应的响应方 SPI、group 14 KE 长度和重复载荷。
+9. 使用 recvmsg 检查 MSG_TRUNC，拒绝被本机接收缓冲区截断的 UDP 报文（包括 IKE 和 DNS）。
 
 ## 构建与测试（只在开发机执行）
 

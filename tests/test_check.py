@@ -67,6 +67,39 @@ class ProtocolTests(unittest.TestCase):
         p = bytearray(run('packet')); p[:8] = bytes(range(1, 9)); p[8:16] = b'R'*8; p[19]=0x20
         self.assertEqual(self.ike(p), 1)
 
+    def test_notify_status_alone_and_missing_required_data_rejected(self):
+        for kind in (16388, 16389, 16390, 17):
+            p=bytearray(response()); p[34:36]=struct.pack('!H', kind)
+            self.assertEqual(self.ike(p), 0)
+        for kind, data in ((16390, b'cookie'), (17, b'\x00\x0e')):
+            p=bytearray(response()); p[34:36]=struct.pack('!H', kind)
+            p.extend(data); p[30:32]=struct.pack('!H', 8+len(data)); p[24:28]=struct.pack('!I', len(p))
+            self.assertEqual(self.ike(p), 1)
+
+    def test_success_requires_responder_spi_and_full_group14_key(self):
+        p=bytearray(run('packet')); p[:8]=bytes(range(1,9)); p[19]=0x20
+        self.assertEqual(self.ike(p), 0)
+        p[8:16]=b'R'*8
+        p[82:340]=b'\0'*258
+        p[80:82]=struct.pack('!H', 19)
+        self.assertEqual(self.ike(p), 0)
+
+    def test_udp_oversized_datagram_valid_prefix_is_rejected(self):
+        for natt in (False, True):
+            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as server:
+                server.bind(('127.0.0.1',0)); server.settimeout(5)
+                port=server.getsockname()[1]
+                def serve():
+                    packet,peer=server.recvfrom(4096); offset=4 if natt else 0
+                    p=bytearray(response(packet[offset:offset+8], natt))
+                    # A valid Notify prefix exactly fills the receive buffer.
+                    p[offset+24:offset+28]=struct.pack('!I',4096-offset)
+                    p[offset+30:offset+32]=struct.pack('!H',4096-offset-28)
+                    p.extend(b'x'*(4097-len(p)))
+                    server.sendto(p,peer)
+                t=threading.Thread(target=serve); t.start()
+                self.assertEqual(run('probe',port,int(natt),150).strip(),b'0'); t.join()
+
     def test_ike_rejects_wrong_spi_exchange_flags_id_lengths(self):
         for offset, value in ((0, 0), (17, 0x10), (18, 35), (19, 8), (19, 0x28), (23, 1), (27, 35), (31, 3), (35, 0)):
             with self.subTest(offset=offset, value=value):

@@ -52,6 +52,15 @@ static int wait_read(int fd,int64_t deadline) {
         return n>0 && (p.revents&(POLLIN|POLLERR|POLLHUP));
     }
 }
+/* recv() silently discards a datagram suffix; never validate just its prefix. */
+static ssize_t recv_datagram(int fd, unsigned char *buffer, size_t capacity) {
+    struct iovec iov={buffer,capacity};
+    struct msghdr msg;
+    memset(&msg,0,sizeof msg); msg.msg_iov=&iov; msg.msg_iovlen=1;
+    ssize_t n=recvmsg(fd,&msg,0);
+    if(n>=0 && (msg.msg_flags&MSG_TRUNC)) return 0;
+    return n;
+}
 static int udp_connect(const char *ip,unsigned port) {
     struct sockaddr_storage ss;
     memset(&ss,0,sizeof ss);
@@ -136,7 +145,7 @@ static int valid_ike(const unsigned char *b,size_t n,const unsigned char spi[8],
     if(natt) { if(n<4 || rd32(b)!=0) return 0; b+=4; n-=4; }
     if(n<32 || memcmp(b,spi,8) || (b[17]>>4)!=2 || b[18]!=34 ||
        !(b[19]&0x20) || (b[19]&0x08) || rd32(b+20)!=0 || rd32(b+24)!=n) return 0;
-    size_t off=28; unsigned next=b[16]; int count=0,seen_sa=0,seen_ke=0,seen_nonce=0,seen_notify=0;
+    size_t off=28; unsigned next=b[16]; int count=0,seen_sa=0,seen_ke=0,seen_nonce=0,seen_error=0;
     if(!next) return 0;
     while(next) {
         if(++count>64 || off+4>n) return 0;
@@ -144,20 +153,25 @@ static int valid_ike(const unsigned char *b,size_t n,const unsigned char spi[8],
         if(len<4 || len>n-off) return 0;
         if(next==41) { /* Notify: protocol, SPI size, type, optional SPI/data. */
             if(len<8 || b[off+4]!=0 || b[off+5]!=0 || rd16(b+off+6)==0) return 0;
-            seen_notify=1;
+            unsigned type=rd16(b+off+6);
+            /* Status notifications alone do not constitute an SA_INIT reply.
+             * COOKIE and INVALID_KE_PAYLOAD need their specified data. */
+            if(type==16390) { if(len<9 || len>72) return 0; seen_error=1; }
+            else if(type==17) { if(len!=10 || !rd16(b+off+8)) return 0; seen_error=1; }
+            else if(type<16384) seen_error=1;
         } else if(next==34) {
-            if(len<9 || rd16(b+off+4)==0) return 0;
+            if(seen_ke || len!=264 || rd16(b+off+4)!=14) return 0;
             seen_ke=1;
         } else if(next==40) {
-            if(len<20 || len>260) return 0;
+            if(seen_nonce || len<20 || len>260) return 0;
             seen_nonce=1;
         } else if(next==33) {
-            if(len<20) return 0;
+            if(seen_sa || len<20) return 0;
             size_t pos=off+4;
             while(pos<off+len) {
                 if(pos+8>off+len) return 0;
                 size_t plen=rd16(b+pos+2),tpos=pos+8+b[pos+6];
-                if(plen<8 || plen>off+len-pos || tpos>pos+plen || b[pos+5]!=1 || !b[pos+7]) return 0;
+                if(plen<8 || plen>off+len-pos || tpos>pos+plen || b[pos+5]!=1 || b[pos+6]!=0 || !b[pos+7]) return 0;
                 unsigned transforms=0;
                 while(tpos<pos+plen) {
                     if(tpos+8>pos+plen) return 0;
@@ -172,7 +186,9 @@ static int valid_ike(const unsigned char *b,size_t n,const unsigned char spi[8],
         } else if(b[off+1]&0x80) return 0;
         next=b[off]; off+=len;
     }
-    return off==n && (seen_notify || (seen_sa && seen_ke && seen_nonce));
+    unsigned char responder_spi=0;
+    for(int i=8;i<16;i++) responder_spi|=b[i];
+    return off==n && (seen_error || (responder_spi && seen_sa && seen_ke && seen_nonce));
 }
 static int ike_probe(const char *ip,unsigned port,int natt,int timeout_ms,const unsigned char key[256]) {
     unsigned char packet[IKE_SIZE+4]={0},reply[4096];
@@ -184,7 +200,7 @@ static int ike_probe(const char *ip,unsigned port,int natt,int timeout_ms,const 
     if(send(fd,packet,IKE_SIZE+offset,0)!=(ssize_t)(IKE_SIZE+offset)) { close(fd); return -1; }
     int ok=0;
     while(wait_read(fd,deadline)) {
-        ssize_t n=recv(fd,reply,sizeof reply,0);
+        ssize_t n=recv_datagram(fd,reply,sizeof reply);
         if(n<0) { if(errno==EINTR || errno==EAGAIN) continue; break; }
         if(valid_ike(reply,(size_t)n,packet+offset,natt)) { ok=1; break; }
     }
@@ -280,7 +296,7 @@ static int dns_query(const char *server,const char *host,int timeout_ms,struct i
     if(send(fd,q,n,0)!=(ssize_t)n) { close(fd); return -1; }
     int result=-1;
     while(wait_read(fd,deadline)) {
-        ssize_t size=recv(fd,reply,sizeof reply,0);
+        ssize_t size=recv_datagram(fd,reply,sizeof reply);
         if(size<0) { if(errno==EINTR || errno==EAGAIN) continue; break; }
         result=parse_dns(reply,(size_t)size,id,host,ips);
         if(result>=0) break;

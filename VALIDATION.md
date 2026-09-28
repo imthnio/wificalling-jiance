@@ -1,15 +1,16 @@
-# Validation — 2026-09-28
+# Validation — 2026-09-29
 
-Base: `74873a95a6c561daad847b631296bd0b8b504e2b`.
+Reviewed current main: `44863e3`; implementation reused from `99630fd` and audited further.
 
-- macOS ARM64: C99 builds with `-Wall -Wextra -Werror` passed.
-- 19 protocol/CLI tests passed, including loopback UDP peers and an unrelated-source rejection test.
-- 12 launcher/distribution tests passed, including curl, wget-only, SHA mismatch, cleanup and child exit status.
-- The 19 protocol tests also passed with AddressSanitizer and UndefinedBehaviorSanitizer.
-- DH group-14 prime matches the RFC 3526 published value; modular exponentiation matches independent Python `pow()` across five inputs.
-- Cross-built with Zig 0.13.0: static stripped Linux x86_64 and aarch64 ELF files, with embedded expected SHA-256 values in `check.sh`.
-- macOS local diagnostic (`--host 127.0.0.1 --dns 127.0.0.1 --timeout 50`): exit 0, child peak RSS 1,654,784 bytes (about 1.58 MiB). This is NOT a Linux/container memory measurement.
-- 64 MiB/no-swap Linux container tests are provided in `scripts/test-64mb.sh` and CI, but were not run on the local macOS host (no Docker runtime).
-- Real target NAT VPS, actual carrier reachability, SIM registration and calls: not tested.
+- 34 tests pass on macOS ARM64: 22 protocol/CLI and 12 launcher/distribution tests.
+- All 34 tests also pass with AddressSanitizer and UndefinedBehaviorSanitizer.
+- Clang static analysis and C99 compilation with -Wall -Wextra -Werror pass.
+- New notification-only and oversized UDP regressions were run against the old native implementation and failed as expected (false-positive acceptance); the repaired implementation rejects them.
+- Normal SA_INIT additionally requires a nonzero responder SPI, one group-14 KE payload of the correct length, and nonduplicated SA/KE/Nonce payloads.
+- Both IKE and DNS receive paths reject MSG_TRUNC rather than inspecting a truncated prefix.
+- Built with Zig 0.13.0: static stripped Linux x86_64 (60,008 bytes) and aarch64 (67,536 bytes), SHA-256 checked against manifest and launcher.
+- No Docker runtime here: this revision has NOT been executed in the 64 MiB Linux container matrix. The included workflow and test script are available, but their existence is not a pass.
+- Actual NAT VPS, carrier/SIM registration, IPv6, and calls were NOT tested.
+- run-local.sh checks the bundled SHA256SUMS and runs the matching Linux binary. The repair is on fix/protocol-audit; GitHub main remains unchanged. The README command downloads the repair branch launcher, which pins its binaries to a fixed commit.
 
-No runtime credentials or user VPS data are included. Test addresses are loopback or documentation ranges. The distribution contains only source, tests, build/CI scripts, documentation, third-party notices and the two generated Linux binaries.
+Only source, tests, build/CI scripts, documentation, notices and generated binaries are distributed. No credentials or VPS data.
