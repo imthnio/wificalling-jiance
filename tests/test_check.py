@@ -220,7 +220,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertTrue(all(row.startswith('['+country+' ') for row in rows))
         p=subprocess.run([BINARY,'--all','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=10)
         self.assertEqual(p.returncode,0,p.stderr)
-        self.assertIn('42 个候选目标',p.stdout)
+        self.assertIn('共检查 42 家',p.stdout)
 
     def test_piped_stdin_still_reads_country_from_terminal(self):
         pid,fd=pty.fork()
@@ -245,7 +245,7 @@ class ProtocolTests(unittest.TestCase):
                     break
             text=output.decode(errors='replace')
             self.assertTrue(sent,text)
-            self.assertIn('3 个候选目标',text)
+            self.assertIn('共检查 3 家',text)
             self.assertIn('[加拿大 Rogers]',text)
             self.assertNotIn('[美国 ',text)
         finally:
@@ -259,14 +259,14 @@ class ProtocolTests(unittest.TestCase):
         p=subprocess.run([BINARY],stdin=subprocess.DEVNULL,capture_output=True,text=True,start_new_session=True,timeout=3)
         self.assertEqual(p.returncode,2)
         self.assertIn('--country',p.stderr)
-        self.assertNotIn('第 1 步',p.stdout)
+        self.assertNotIn('正在检测',p.stdout)
 
     def test_country_bad_args_fail_before_network(self):
         for args in (['--country','不存在'],['--country',''],['--filter',''],
                      ['--all','--country','英国'],['--country','美国','--filter','加拿大']):
             p=subprocess.run([BINARY,*args],capture_output=True,text=True,timeout=3)
             self.assertEqual(p.returncode,2)
-            self.assertNotIn('第 1 步',p.stdout)
+            self.assertNotIn('正在检测',p.stdout)
 
     def test_ike_sa_rejects_unoffered_duplicate_and_malformed_transforms(self):
         good=bytearray(run('packet')); good[:8]=bytes(range(1,9)); good[8:16]=b'R'*8; good[19]=0x20
@@ -311,15 +311,60 @@ class ProtocolTests(unittest.TestCase):
         for args in (['--host','bad host'],['--host','::1'],['--host','bad\x1b[31m'],['--filter','no-such-carrier']):
             p=subprocess.run([BINARY,*args,'--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=5)
             self.assertEqual(p.returncode,2)
-            self.assertNotIn('第 1 步',p.stdout)
+            self.assertNotIn('正在检测',p.stdout)
 
     def test_host_trailing_root_dot_is_normalized(self):
         p=subprocess.run([BINARY,'--host','epdg.example.','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=5)
         self.assertEqual(p.returncode,0,p.stderr)
         self.assertIn('[epdg.example]',p.stdout)
 
+    def test_plain_results_distinguish_evidence_from_errors(self):
+        cases=[((1,1,0,0),'✅ 网络检测通过'),((0,1,0,0),'⚠️ 只测通了部分连接'),
+               ((0,0,0,0),'⚠️ 暂未测通'),((0,0,1,0),'找不到运营商服务器'),
+               ((0,0,0,1),'❌ 检测出错')]
+        for args,expected in cases:
+            result=run('result',*args).decode()
+            self.assertIn(expected,result)
+            self.assertNotIn('\x1b',result)
+            self.assertNotIn('不能使用',result)
+
+    def test_terminal_color_and_no_color_opt_out(self):
+        for disabled in (False,True):
+            pid,fd=pty.fork()
+            if pid==0:
+                if disabled: os.environ['NO_COLOR']='1'
+                else: os.environ.pop('NO_COLOR',None)
+                os.execl(HARNESS,HARNESS,'result','1','1','0','0')
+            output=b''
+            try:
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline:
+                    if select.select([fd],[],[],.1)[0]:
+                        try: chunk=os.read(fd,4096)
+                        except OSError: break
+                        if not chunk: break
+                        output+=chunk
+                self.assertIn('网络检测通过'.encode(),output)
+                self.assertEqual(b'\x1b[1;36m' in output,not disabled)
+                self.assertEqual(b'\x1b[1;32m' in output,not disabled)
+            finally:
+                os.close(fd)
+                try: os.kill(pid,signal.SIGKILL)
+                except ProcessLookupError: pass
+                os.waitpid(pid,0)
+
+    def test_details_are_opt_in(self):
+        base=[BINARY,'--country','加拿大','--dns','127.0.0.1','--timeout','1']
+        plain=subprocess.check_output(base,text=True)
+        detail=subprocess.check_output(base+['--details'],text=True)
+        self.assertNotIn('DNS/UDP 53',plain)
+        self.assertNotIn('技术汇总',plain)
+        self.assertIn('技术汇总',detail)
+        self.assertIn('DNS/UDP 53',detail)
+        self.assertIn('共检查 3 家',plain)
+
     def test_carrier_list_and_version(self):
         self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),42)
-        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.1.1')
+        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.2.0')
 
 if __name__=='__main__': unittest.main(verbosity=2)

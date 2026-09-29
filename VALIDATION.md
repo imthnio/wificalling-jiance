@@ -1,4 +1,4 @@
-# Validation — 2.1.1 protocol and input audit
+# Validation — 2.2.0 protocol audit and readable results
 
 Reviewed main 3736952 (including the simplified README and appreciation image). README and user content are preserved.
 
@@ -11,10 +11,17 @@ Reviewed main 3736952 (including the simplified README and appreciation image). 
 - Reject target strings with spaces/control characters/unsupported IPv6 before sending; normalize a trailing DNS root dot. Unmatched filters now fail before DNS reference requests and DH computation.
 - Separate terminal input and output streams; avoid switching a C update stream from input to output without positioning. Stop immediately if EOF/error occurs while draining oversized menu input.
 
+## Display changes
+
+- All country/carrier labels use the same bold cyan color on a terminal.
+- Green: both ports replied on the same IP; yellow: partial or unconfirmed; red: local probe error. Results explicitly leave actual calls to a phone test.
+- Default output is one plain-language line per carrier. --details exposes technical diagnostics. Redirected output has no ANSI codes; NO_COLOR disables terminal colors.
+- Positive/negative result presentation, PTY colors, NO_COLOR and details mode have regression coverage.
+
 ## Evidence
 
 - Five added regression methods failed on the pre-fix code as expected.
-- All 46 local tests pass with ASan/UBSan. Clang static analysis reports no warnings.
+- All 49 local tests pass with ASan/UBSan. Clang static analysis reports no warnings.
 - Tests include positive protocol packets, malformed packets, loopback UDP, menu/PTY pipe interaction, country selection, launcher failures and binary hash checks.
 - Zig 0.13.0 cross-builds static x86_64 and aarch64 Linux binaries; hashes are updated together.
 - GitHub Actions runs the same tests on Linux, plus 64 MiB/no-swap Alpine/Debian/Ubuntu containers and a byte-identical source rebuild. Consult Actions for the exact release commit.

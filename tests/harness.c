@@ -4,6 +4,9 @@
 int main(int argc,char **argv) {
     unsigned char key[256],exponent[32]={0};
     if(argc<2) return 2;
+    if(!strcmp(argv[1],"result") && argc==6) {
+        carrier_result("美国 Test",atoi(argv[2]),atoi(argv[3]),atoi(argv[4]),atoi(argv[5])); return 0;
+    }
     if(!strcmp(argv[1],"menu")) {
         char selected[64]={0}; int result=choose_country(stdin,stderr,selected);
         printf("%d:%s\n",result,selected); return 0;
