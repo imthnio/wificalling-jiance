@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "2.1.1"
+#define VERSION "2.2.0"
 #define MAX_IPS 2
 #define MAX_DNS 4
 #define DNS_SIZE 4096
@@ -354,6 +354,19 @@ static unsigned positive_int(const char *s,unsigned max) {
     for(;*s;s++) { if(*s<'0'||*s>'9' || value>max/10) return 0; value=value*10+(unsigned)(*s-'0'); if(value>max) return 0; }
     return value;
 }
+static const char *color(FILE *out,const char *code) {
+    return isatty(fileno(out)) && !getenv("NO_COLOR")?code:"";
+}
+static void carrier_result(const char *name,int both,int any,int unresolved,int errors) {
+    const char *message,*shade;
+    if(both) { message="✅ 网络检测通过，可以用手机试通话"; shade="\033[1;32m"; }
+    else if(any) { message="⚠️ 只测通了部分连接，暂不能确认能用"; shade="\033[1;33m"; }
+    else if(errors) { message="❌ 检测出错：本机无法发送，请检查网络设置"; shade="\033[1;31m"; }
+    else if(unresolved) { message="⚠️ 暂未测通：找不到运营商服务器地址"; shade="\033[1;33m"; }
+    else { message="⚠️ 暂未测通：运营商没有有效回应，可稍后重试"; shade="\033[1;33m"; }
+    printf("%s[%s]%s %s%s%s\n",color(stdout,"\033[1;36m"),name,color(stdout,"\033[0m"),
+           color(stdout,shade),message,color(stdout,"\033[0m"));
+}
 /* Country names come from the existing carrier labels; no duplicate catalog. */
 static int country_names(char names[CARRIER_COUNT][64]) {
     int count=0;
@@ -377,7 +390,7 @@ static int choose_country(FILE *input,FILE *output,char selected[64]) {
     for(int i=0;i<count;i++) {
         int carriers_count=0;
         for(size_t j=0;j<sizeof carriers/sizeof *carriers;j++) carriers_count+=country_matches(carriers[j].name,names[i]);
-        fprintf(output,"  %2d. %s（%d 家）\n",i+1,names[i],carriers_count);
+        fprintf(output,"%s  %2d. %s（%d 家）%s\n",color(output,"\033[1;36m"),i+1,names[i],carriers_count,color(output,"\033[0m"));
     }
     fputs("   0. 全部国家（较慢）\n   q. 退出\n",output);
     for(;;) {
@@ -404,13 +417,14 @@ static void usage(void) {
     puts("WiFi Calling 网络探测 " VERSION "（低内存 / IPv4）\n"
          "用法: check [--country 国家 | --all | --filter 名称] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]\n"
          "      check --list | --version | --help\n"
+         "--details 显示地址和端口明细；NO_COLOR=1 关闭颜色。\n"
          "默认先选择手机卡所属国家；--country 英国 跳过菜单，--all 检测全部。\n"
          "--filter 示例: 德国、英国、T-Mobile；--host 覆盖默认运营商候选名单。\n"
          "--dns 仅使用指定解析器（可重复最多4个）；--timeout 范围 1..10000。\n"
          "只验证未认证 IKEv2 响应，不能证明 SIM 注册、通话、IPv6 或代理 UDP 转发可用。");
 }
 int main(int argc,char **argv) {
-    const char *filter=NULL,*host=NULL,*country=NULL; char selected[64],normalized_host[254]; int timeout_ms=1500,all=0;
+    const char *filter=NULL,*host=NULL,*country=NULL; char selected[64],normalized_host[254]; int timeout_ms=1500,all=0,details=0;
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--help")) { usage(); return 0; }
         if(!strcmp(argv[i],"--version")) { puts(VERSION); return 0; }
@@ -418,6 +432,7 @@ int main(int argc,char **argv) {
             for(size_t c=0;c<sizeof carriers/sizeof *carriers;c++) printf("%s  epdg.epc.mnc%s.mcc%s.pub.3gppnetwork.org\n",carriers[c].name,carriers[c].mnc,carriers[c].mcc);
             return 0;
         }
+        if(!strcmp(argv[i],"--details")) { details=1; continue; }
         if(!strcmp(argv[i],"--all")) { all=1; continue; }
         if(i+1>=argc) { usage(); return 2; }
         const char *opt=argv[i++],*value=argv[i];
@@ -464,12 +479,13 @@ int main(int argc,char **argv) {
     }
     if(!resolver_count) load_resolvers();
     setvbuf(stdout,NULL,_IOLBF,0);
-    puts("============================================================\nWiFi Calling 网络探测 " VERSION " / 64 MB 低内存设计\n串行探测 IPv4；无需 root、Python、Docker、入站端口映射。\n有效响应只说明网关返回路径可达；超时表示未确认。\n============================================================");
-    puts("第 1 步：DNS/UDP 53 参考测试（不能代表 UDP 500/4500）");
+    printf("%sWiFi 通话网络检测 " VERSION "%s\n",color(stdout,"\033[1;36m"),color(stdout,"\033[0m"));
+    puts("正在检测，请稍等。每家运营商测完后会显示结果。");
+    if(details) puts("第 1 步：DNS/UDP 53 参考测试（不能代表 UDP 500/4500）");
     struct in_addr ips[MAX_IPS]; int dns_ok=0;
     for(int i=0;i<resolver_count;i++) if(dns_query(resolvers[i],"example.com",timeout_ms,ips)>0) { dns_ok=1; break; }
-    puts(dns_ok?"  收到有效 DNS 回答。":"  未取得 DNS IPv4 回答；继续 IKE 检测，不能据此断定所有 UDP 被封锁。");
-    puts("第 2 步：检测 ePDG 候选地址（每个域名最多取两个不同 IPv4）");
+    if(details) puts(dns_ok?"  收到有效 DNS 回答。":"  未取得 DNS IPv4 回答；继续 IKE 检测，不能据此断定所有 UDP 被封锁。");
+    if(details) puts("第 2 步：检测 ePDG 候选地址（每个域名最多取两个不同 IPv4）");
     unsigned char exponent[32],public_key[256]; random_bytes(exponent,sizeof exponent); exponent[0]|=0x80;
     dh_public(public_key,exponent); memset(exponent,0,sizeof exponent);
     int total=0,both=0,any=0,unresolved=0,local_errors=0;
@@ -483,25 +499,33 @@ int main(int argc,char **argv) {
         if(host) snprintf(candidate,sizeof candidate,"%s",host);
         else snprintf(candidate,sizeof candidate,"epdg.epc.mnc%s.mcc%s.pub.3gppnetwork.org",carriers[i].mnc,carriers[i].mcc);
         int n=resolve_host(candidate,timeout_ms,ips);
-        if(!n) { printf("[%s] 未取得 IPv4 地址（DNS 失败、无 A 记录或候选域名未公开）\n",name); unresolved++; continue; }
-        int carrier_both=0,carrier_any=0;
+        if(!n) { carrier_result(name,0,0,1,0); unresolved++; continue; }
+        int carrier_both=0,carrier_any=0,carrier_errors=0;
         for(int j=0;j<n;j++) {
             char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET,&ips[j],ip,sizeof ip);
             int p500=ike_probe(ip,500,0,timeout_ms,public_key);
             int p4500=ike_probe(ip,4500,1,timeout_ms,public_key);
             local_errors+=(p500<0)+(p4500<0);
-            printf("[%s] %s  UDP 500: %s  UDP 4500: %s\n",name,ip,
+            carrier_errors+=(p500<0)+(p4500<0);
+            if(details) printf("[%s] %s  UDP 500: %s  UDP 4500: %s\n",name,ip,
                    p500>0?"有效响应":p500<0?"本地发送失败":"未确认",
                    p4500>0?"有效响应":p4500<0?"本地发送失败":"未确认");
             carrier_both|=p500>0 && p4500>0; carrier_any|=p500>0 || p4500>0;
         }
+        carrier_result(name,carrier_both,carrier_any,0,carrier_errors);
         both+=carrier_both; any+=carrier_any;
     }
     if(!total) { fputs("筛选未匹配运营商；使用 --list 查看名称。\n",stderr); return 2; }
-    printf("\n检测结论：%d 个候选目标；同一 IP 双端口有效响应 %d；至少一个端口响应 %d；无 IPv4 地址 %d。\n",total,both,any,unresolved);
-    if(any) puts("已观察到 IKEv2 返回路径；仍需用实际 SIM/手机验证注册和通话。");
-    else puts("未确认 IKEv2 返回路径；不能区分丢包、防火墙、运营商策略、算法不接受或地址变更。");
-    if(local_errors) printf("本地套接字/发送失败 %d 次，请检查出站权限和路由。\n",local_errors);
-    puts("NAT 小机不需要映射入站 500/4500；实际通话还取决于 UDP 转发和 NAT 会话保持。\n检测完成（这是连通性诊断，不是 VoWiFi 开通或注册测试）。");
+    printf("\n%s检测结果%s：共检查 %d 家；网络检测通过 %d 家；部分测通 %d 家；其余未测通或检测出错 %d 家。\n",
+           color(stdout,"\033[1;36m"),color(stdout,"\033[0m"),total,both,any-both,total-any);
+    const char *summary=both?"✅ 有运营商网络检测通过，可以用对应手机卡试通话。":
+                            any?"⚠️ 只测通了部分连接，目前还不能确认能用。":
+                                "⚠️ 这次没有测通，暂不能确认能用；不要仅凭这个结果换 VPS。";
+    printf("%s%s%s\n",color(stdout,both?"\033[1;32m":"\033[1;33m"),summary,color(stdout,"\033[0m"));
+    puts("手机需支持并开通 WiFi 通话，连接也要经过这台 VPS；能否打电话，以手机实际注册和试拨为准。");
+    if(details) {
+        printf("技术汇总：%d 个候选目标；同一 IP 双端口响应 %d；至少单端口响应 %d；无 IPv4 地址 %d；本地发送失败 %d 次。\n",total,both,any,unresolved,local_errors);
+        puts("这是未认证 IKE 返回路径检测，不验证手机到 VPS 的连接、SIM 注册或真实通话。");
+    } else puts("需要排查原因，可加 --details 查看地址和端口明细。");
     return local_errors && !any?1:0;
 }
