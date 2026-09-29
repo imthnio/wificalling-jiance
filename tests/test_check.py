@@ -268,8 +268,58 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(p.returncode,2)
             self.assertNotIn('第 1 步',p.stdout)
 
+    def test_ike_sa_rejects_unoffered_duplicate_and_malformed_transforms(self):
+        good=bytearray(run('packet')); good[:8]=bytes(range(1,9)); good[8:16]=b'R'*8; good[19]=0x20
+        for offset,value in ((36,2),(47,99),(56,1),(55,9),(51,0),(75,19)):
+            p=bytearray(good); p[offset]=value
+            self.assertEqual(self.ike(p),0,(offset,value))
+
+    def test_ike_selected_transforms_may_be_reordered_or_use_tlv_key_length(self):
+        p=bytearray(run('packet')); p[:8]=bytes(range(1,9));p[8:16]=b'R'*8;p[19]=0x20
+        reordered=bytearray(p)
+        reordered[40:76]=p[52:60]+p[40:52]+p[60:76]
+        self.assertEqual(self.ike(reordered),1)
+        p[48:52]=b'\x00\x0e\x00\x02\x00\x80'
+        p[42:44]=struct.pack('!H',14);p[30:32]=struct.pack('!H',50)
+        p[34:36]=struct.pack('!H',46);p[24:28]=struct.pack('!I',len(p))
+        self.assertEqual(self.ike(p),1)
+
+    def test_unsupported_critical_notify_requires_payload_type(self):
+        p=bytearray(response());p[34:36]=b'\x00\x01'
+        self.assertEqual(self.ike(p),0)
+        p.append(99);p[30:32]=struct.pack('!H',9);p[24:28]=struct.pack('!I',len(p))
+        self.assertEqual(self.ike(p),1)
+
+    def test_dns_rejects_missing_sections_and_trailing_bytes(self):
+        base=dns([rr('epdg.example',1,b'\x01'*4)])
+        for field in (8,10):
+            p=bytearray(base);p[field:field+2]=b'\x00\x01'
+            self.assertEqual(self.parse(p),['-1'])
+        self.assertEqual(self.parse(base+b'extra'),['-1'])
+        p=bytearray(dns(flags=0x8183));p[8:10]=b'\x00\x01'
+        self.assertEqual(self.parse(p),['-1'])
+        p=bytearray(base);p[8:10]=b'\x00\x01';p.extend(rr('example',2,name('ns.example')))
+        self.assertEqual(self.parse(p),['1','1.1.1.1'])
+
+    def test_dns_rejects_contradictory_cname_and_bad_a_length(self):
+        for records in ([rr('epdg.example',1,b'abc')],
+                        [rr('epdg.example',1,b'\x01'*4),rr('epdg.example',5,name('alias.example'))],
+                        [rr('epdg.example',5,name('a.example')),rr('epdg.example',5,name('b.example'))]):
+            self.assertEqual(self.parse(dns(records)),['-1'])
+
+    def test_invalid_target_and_no_match_fail_before_probes(self):
+        for args in (['--host','bad host'],['--host','::1'],['--host','bad\x1b[31m'],['--filter','no-such-carrier']):
+            p=subprocess.run([BINARY,*args,'--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=5)
+            self.assertEqual(p.returncode,2)
+            self.assertNotIn('第 1 步',p.stdout)
+
+    def test_host_trailing_root_dot_is_normalized(self):
+        p=subprocess.run([BINARY,'--host','epdg.example.','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=5)
+        self.assertEqual(p.returncode,0,p.stderr)
+        self.assertIn('[epdg.example]',p.stdout)
+
     def test_carrier_list_and_version(self):
         self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),42)
-        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.1.0')
+        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.1.1')
 
 if __name__=='__main__': unittest.main(verbosity=2)

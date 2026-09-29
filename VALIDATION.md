@@ -1,11 +1,28 @@
-# Validation — 2.1.0 country menu
+# Validation — 2.1.1 protocol and input audit
 
-- 39 local macOS ARM64 regression tests passed (27 protocol/CLI/menu tests and 12 launcher tests).
-- Menu tests cover number/name selection, invalid/empty/oversized input, cancellation, EOF, explicit all-country mode, and conflicting arguments.
-- A pseudo-terminal test verifies country input still works when standard input is a pipe. No controlling terminal without a selector returns a clear error before network probes.
-- Country integration tests use loopback DNS only: USA/Canada select exactly 3 carriers; UK selects 4; --all selects 42.
-- USA retains T-Mobile/AT&T/Verizon. Canada adds Rogers 302-720, Bell 302-610, TELUS 302-220, checked against https://cnac.ca/data/MNC_Codes.htm . These are PLMN-derived candidates, not verified service endpoints.
-- Zig 0.13.0 builds static Linux x86_64 and aarch64 binaries; SHA256SUMS and launcher hashes are regenerated together.
-- GitHub Actions tests protocol/launcher regressions, ASan/UBSan, hashes, 64 MiB/no-swap Linux containers and reproducible builds. Check the run for the exact current commit.
-- The earlier 2.0.0 baseline passed https://github.com/imthnio/wificalling-jiance/actions/runs/36469713502 . That older run is not evidence for this new revision.
-- Actual NAT VPS, SIM registration, real calls and IPv6 remain untested.
+Reviewed main 3736952 (including the simplified README and appreciation image). README and user content are preserved.
+
+## Confirmed and repaired
+
+- SA_INIT successful responses previously accepted unoffered proposal numbers, duplicate/unoffered transform types/IDs and malformed attributes. Validate the single offered proposal and four selected transforms; legal transform ordering and TV/TLV key-length encodings are covered by positive tests.
+- UNSUPPORTED_CRITICAL_PAYLOAD notifications now require the offending payload type byte.
+- DNS parsing previously returned an A record without checking missing authority/additional records or trailing bytes. Validate all declared record envelopes and the whole datagram, including negative answers; only Answer-section A records/CNAMEs supply target addresses.
+- Reject malformed A record lengths, conflicting CNAME targets and simultaneous CNAME/A at the queried owner.
+- Reject target strings with spaces/control characters/unsupported IPv6 before sending; normalize a trailing DNS root dot. Unmatched filters now fail before DNS reference requests and DH computation.
+- Separate terminal input and output streams; avoid switching a C update stream from input to output without positioning. Stop immediately if EOF/error occurs while draining oversized menu input.
+
+## Evidence
+
+- Five added regression methods failed on the pre-fix code as expected.
+- All 46 local tests pass with ASan/UBSan. Clang static analysis reports no warnings.
+- Tests include positive protocol packets, malformed packets, loopback UDP, menu/PTY pipe interaction, country selection, launcher failures and binary hash checks.
+- Zig 0.13.0 cross-builds static x86_64 and aarch64 Linux binaries; hashes are updated together.
+- GitHub Actions runs the same tests on Linux, plus 64 MiB/no-swap Alpine/Debian/Ubuntu containers and a byte-identical source rebuild. Consult Actions for the exact release commit.
+
+## Remaining limits
+
+This is an unauthenticated IPv4 IKE return-path probe. It does not validate SIM authentication, IMS registration, voice calls, phone-to-VPS routing, IPv6/NAT64 or sustained UDP sessions. Timeout remains unconfirmed, not proof of blocking. PLMN-derived carrier domains remain candidates, not a certified live endpoint inventory.
+
+DNS does not implement TCP fallback, /etc/hosts or search domains. CNAME resolution currently expects the final A record in the same Answer section; a CNAME-only answer may remain unresolved. No actual NAT VPS or phone call was tested in this audit.
+
+Protocol references: https://www.rfc-editor.org/rfc/inline-errata/rfc7296.html and https://www.rfc-editor.org/rfc/inline-errata/rfc1035.html
