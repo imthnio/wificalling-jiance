@@ -199,16 +199,36 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual(subprocess.run([BINARY,*args],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode,2)
 
     def test_country_menu_selection_retry_cancel_and_eof(self):
-        for data, expected in ((b'5\n', '1:英国'), ('加拿大\n'.encode(), '1:加拿大'),
-                               ('美国\n'.encode(), '1:美国'), (b'0\n','0:'),
-                               (b'q\n','-1:'), (b'', '-1:'),
-                               (b'\n999\nbad\n5\n','1:英国'),
-                               (b'x'*200+b'\n5\n','1:英国')):
+        cases=((b'2\n13\n','1:英国'), ('美洲\n加拿大\n'.encode(),'1:加拿大'),
+               ('美洲\n美国\n'.encode(),'1:美国'), (b'1\n1\n','1:菲律宾'),
+               (b'0\n','0:'),(b'q\n','-1:'),(b'','-1:'),(b'3\n','-1:'),
+               (b'\n999\nbad\n2\n\n999\n13\n','1:英国'),
+               (b'x'*200+b'\n2\n13\n','1:英国'))
+        for data,expected in cases:
             p=subprocess.run([HARNESS,'menu'],input=data,capture_output=True,check=True)
             self.assertEqual(p.stdout.decode().strip(),expected)
             self.assertIn('手机卡所属国家',p.stderr.decode())
-            self.assertIn('加拿大（3 家）',p.stderr.decode())
-            self.assertIn('美国（3 家）',p.stderr.decode())
+
+    def test_continent_menu_order_and_country_membership(self):
+        expected={1:['菲律宾'],2:['爱尔兰','奥地利','比利时','波兰','德国','法国','荷兰','葡萄牙','瑞典','瑞士','西班牙','意大利','英国'],3:['加拿大','美国']}
+        listed=set()
+        for region,names in expected.items():
+            p=subprocess.run([HARNESS,'menu'],input=f'{region}\nq\n'.encode(),capture_output=True,check=True)
+            shown=re.findall(r'\[([A-Z])\] ([^（]+)（',p.stderr.decode())
+            self.assertEqual([name for initial,name in shown],names)
+            listed.update(names)
+            for index,name in enumerate(names,1):
+                result=subprocess.run([HARNESS,'menu'],input=f'{region}\n{index}\n'.encode(),capture_output=True,check=True)
+                self.assertEqual(result.stdout.decode().strip(),'1:'+name)
+        carriers=subprocess.check_output([BINARY,'--list'],text=True).splitlines()
+        self.assertEqual(listed,{line.split()[0] for line in carriers})
+
+    def test_menu_back_and_wrong_continent_do_not_start_scan(self):
+        for data in ('3\nb\n1\n1\n','3\n0\n1\n1\n','1\n美国\n1\n'):
+            p=subprocess.run([HARNESS,'menu'],input=data.encode(),capture_output=True,check=True)
+            self.assertEqual(p.stdout.decode().strip(),'1:菲律宾')
+        p=subprocess.run([HARNESS,'menu'],input=b'3\n0\n',capture_output=True,check=True)
+        self.assertEqual(p.stdout.strip(),b'-1:')
 
     def test_country_filter_and_all_are_explicit(self):
         for country in ('美国','加拿大','英国'):
@@ -227,7 +247,7 @@ class ProtocolTests(unittest.TestCase):
         if pid==0:
             os.execl('/bin/sh','sh','-c',
                      'printf ignored | "$1" --dns 127.0.0.1 --timeout 1','sh',BINARY)
-        output=b''; sent=False; finished=False
+        output=b''; sent=False; continent_sent=False; finished=False
         try:
             deadline=time.monotonic()+10
             while time.monotonic()<deadline:
@@ -236,6 +256,8 @@ class ProtocolTests(unittest.TestCase):
                     except OSError: break
                     if not chunk: break
                     output+=chunk
+                    if not continent_sent and '输入编号或洲名称：'.encode() in output:
+                        os.write(fd,'美洲\n'.encode()); continent_sent=True
                     if not sent and '输入编号或国家名称：'.encode() in output:
                         os.write(fd,'加拿大\n'.encode()); sent=True
                 done,status=os.waitpid(pid,os.WNOHANG)
@@ -365,6 +387,6 @@ class ProtocolTests(unittest.TestCase):
 
     def test_carrier_list_and_version(self):
         self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),42)
-        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.2.0')
+        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.3.0')
 
 if __name__=='__main__': unittest.main(verbosity=2)

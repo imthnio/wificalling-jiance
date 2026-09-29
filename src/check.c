@@ -14,13 +14,15 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "2.2.0"
+#define VERSION "2.3.0"
 #define MAX_IPS 2
 #define MAX_DNS 4
 #define DNS_SIZE 4096
 #define IKE_SIZE 376
 #include "carriers.h"
 #define CARRIER_COUNT (sizeof carriers/sizeof *carriers)
+#define COUNTRY_COUNT (sizeof countries/sizeof *countries)
+#define CONTINENT_COUNT (sizeof continents/sizeof *continents)
 
 static uint16_t rd16(const unsigned char *p) { return (uint16_t)((p[0]<<8)|p[1]); }
 static uint32_t rd32(const unsigned char *p) { return ((uint32_t)rd16(p)<<16)|rd16(p+2); }
@@ -385,32 +387,60 @@ static int country_matches(const char *name,const char *country) {
 }
 /* 1: selected country; 0: explicitly all; -1: cancel/EOF. */
 static int choose_country(FILE *input,FILE *output,char selected[64]) {
-    char names[CARRIER_COUNT][64]; int count=country_names(names);
-    fputs("请选择要检测的手机卡所属国家（不是 VPS 所在国家）：\n",output);
-    for(int i=0;i<count;i++) {
-        int carriers_count=0;
-        for(size_t j=0;j<sizeof carriers/sizeof *carriers;j++) carriers_count+=country_matches(carriers[j].name,names[i]);
-        fprintf(output,"%s  %2d. %s（%d 家）%s\n",color(output,"\033[1;36m"),i+1,names[i],carriers_count,color(output,"\033[0m"));
-    }
-    fputs("   0. 全部国家（较慢）\n   q. 退出\n",output);
+    int region=-1;
+    fputs("请选择要测试的手机卡所属国家所在的洲（不是 VPS 所在地）：\n",output);
     for(;;) {
-        char line[128];
-        fputs("输入编号或国家名称：",output); fflush(output);
-        if(!fgets(line,sizeof line,input)) return -1;
-        if(!strchr(line,'\n') && !feof(input)) {
-            int c; while((c=fgetc(input))!=EOF && c!='\n') {}
-            if(c==EOF) return -1;
-            fputs("输入过长，请重新选择。\n",output); continue;
+        unsigned entries[COUNTRY_COUNT]; unsigned count=0;
+        if(region<0) {
+            for(unsigned i=0;i<CONTINENT_COUNT;i++) {
+                unsigned total=0;
+                for(unsigned j=0;j<COUNTRY_COUNT;j++) total+=countries[j].continent==i;
+                fprintf(output,"%s  %u. %s（%u 个国家）%s\n",color(output,"\033[1;36m"),i+1,continents[i],total,color(output,"\033[0m"));
+            }
+            fputs("  0. 全部国家（较慢）\n  q. 退出\n",output);
+        } else {
+            for(unsigned i=0;i<COUNTRY_COUNT;i++) if(countries[i].continent==(unsigned)region) {
+                unsigned pos=count;
+                while(pos && strcmp(countries[entries[pos-1]].pinyin,countries[i].pinyin)>0) {
+                    entries[pos]=entries[pos-1]; pos--;
+                }
+                entries[pos]=i; count++;
+            }
+            fprintf(output,"\n%s%s：请选择国家（按中文拼音 A–Z 排序）%s\n",color(output,"\033[1;36m"),continents[region],color(output,"\033[0m"));
+            for(unsigned i=0;i<count;i++) {
+                const struct country_info *item=&countries[entries[i]]; unsigned n=0;
+                for(size_t j=0;j<CARRIER_COUNT;j++) n+=country_matches(carriers[j].name,item->name);
+                fprintf(output,"%s  %2u. [%c] %s（%u 家）%s\n",color(output,"\033[1;36m"),i+1,
+                        toupper((unsigned char)item->pinyin[0]),item->name,n,color(output,"\033[0m"));
+            }
+            fputs("   0 / b. 返回选洲\n   q. 退出\n",output);
         }
-        char *value=line; while(isspace((unsigned char)*value)) value++;
-        size_t n=strlen(value); while(n && isspace((unsigned char)value[n-1])) value[--n]=0;
-        if(!strcmp(value,"q") || !strcmp(value,"Q")) return -1;
-        if(!strcmp(value,"0")) return 0;
-        unsigned index=positive_int(value,(unsigned)count);
-        for(int i=0;i<count;i++) if((unsigned)(i+1)==index || !strcmp(value,names[i])) {
-            snprintf(selected,64,"%.63s",names[i]); return 1;
+        for(;;) {
+            char line[128];
+            fputs(region<0?"输入编号或洲名称：":"输入编号或国家名称：",output); fflush(output);
+            if(!fgets(line,sizeof line,input)) return -1;
+            if(!strchr(line,'\n') && !feof(input)) {
+                int c; while((c=fgetc(input))!=EOF && c!='\n') {}
+                if(c==EOF) return -1;
+                fputs("输入过长，请重新选择。\n",output); continue;
+            }
+            char *value=line; while(isspace((unsigned char)*value)) value++;
+            size_t n=strlen(value); while(n && isspace((unsigned char)value[n-1])) value[--n]=0;
+            if(!strcmp(value,"q") || !strcmp(value,"Q")) return -1;
+            if(region<0) {
+                if(!strcmp(value,"0")) return 0;
+                unsigned index=positive_int(value,CONTINENT_COUNT);
+                for(unsigned i=0;i<CONTINENT_COUNT;i++) if(index==i+1 || !strcmp(value,continents[i])) { region=(int)i; break; }
+                if(region>=0) break;
+            } else {
+                if(!strcmp(value,"0") || !strcasecmp(value,"b")) { region=-1; break; }
+                unsigned index=positive_int(value,count);
+                for(unsigned i=0;i<count;i++) if(index==i+1 || !strcmp(value,countries[entries[i]].name)) {
+                    snprintf(selected,64,"%.63s",countries[entries[i]].name); return 1;
+                }
+            }
+            fputs("无效选择，请输入当前列表中的编号或名称。\n",output);
         }
-        fputs("无效选择，请输入列表中的编号或国家名称。\n",output);
     }
 }
 static void usage(void) {
@@ -418,7 +448,7 @@ static void usage(void) {
          "用法: check [--country 国家 | --all | --filter 名称] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]\n"
          "      check --list | --version | --help\n"
          "--details 显示地址和端口明细；NO_COLOR=1 关闭颜色。\n"
-         "默认先选择手机卡所属国家；--country 英国 跳过菜单，--all 检测全部。\n"
+         "默认先选洲，再按拼音顺序选国家；--country 英国 跳过菜单，--all 检测全部。\n"
          "--filter 示例: 德国、英国、T-Mobile；--host 覆盖默认运营商候选名单。\n"
          "--dns 仅使用指定解析器（可重复最多4个）；--timeout 范围 1..10000。\n"
          "只验证未认证 IKEv2 响应，不能证明 SIM 注册、通话、IPv6 或代理 UDP 转发可用。");
