@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "2.1.0"
+#define VERSION "2.1.1"
 #define MAX_IPS 2
 #define MAX_DNS 4
 #define DNS_SIZE 4096
@@ -159,6 +159,7 @@ static int valid_ike(const unsigned char *b,size_t n,const unsigned char spi[8],
              * COOKIE and INVALID_KE_PAYLOAD need their specified data. */
             if(type==16390) { if(len<9 || len>72) return 0; seen_error=1; }
             else if(type==17) { if(len!=10 || !rd16(b+off+8)) return 0; seen_error=1; }
+            else if(type==1) { if(len!=9) return 0; seen_error=1; }
             else if(type<16384) seen_error=1;
         } else if(next==34) {
             if(seen_ke || len!=264 || rd16(b+off+4)!=14) return 0;
@@ -168,21 +169,28 @@ static int valid_ike(const unsigned char *b,size_t n,const unsigned char spi[8],
             seen_nonce=1;
         } else if(next==33) {
             if(seen_sa || len<20) return 0;
-            size_t pos=off+4;
-            while(pos<off+len) {
-                if(pos+8>off+len) return 0;
-                size_t plen=rd16(b+pos+2),tpos=pos+8+b[pos+6];
-                if(plen<8 || plen>off+len-pos || tpos>pos+plen || b[pos+5]!=1 || b[pos+6]!=0 || !b[pos+7]) return 0;
-                unsigned transforms=0;
-                while(tpos<pos+plen) {
-                    if(tpos+8>pos+plen) return 0;
-                    size_t tlen=rd16(b+tpos+2);
-                    if(tlen<8 || tlen>pos+plen-tpos || b[tpos]!=(tpos+tlen<pos+plen?3:0)) return 0;
-                    transforms++; tpos+=tlen;
-                }
-                if(transforms!=b[pos+7] || b[pos]!=(pos+plen<off+len?2:0)) return 0;
-                pos+=plen;
+            size_t pos=off+4,plen=rd16(b+pos+2);
+            /* We offered exactly one proposal with four transforms. A successful
+             * response must choose it, not merely contain a plausible SA shape. */
+            if(plen!=len-4 || b[pos]!=0 || b[pos+4]!=1 || b[pos+5]!=1 ||
+               b[pos+6]!=0 || b[pos+7]!=4) return 0;
+            size_t tpos=pos+8; unsigned types=0;
+            while(tpos<pos+plen) {
+                if(tpos+8>pos+plen) return 0;
+                size_t tlen=rd16(b+tpos+2); unsigned type=b[tpos+4],id=rd16(b+tpos+6);
+                if(tlen<8 || tlen>pos+plen-tpos || b[tpos]!=(tpos+tlen<pos+plen?3:0) ||
+                   type<1 || type>4 || (types&(1u<<type))) return 0;
+                types|=1u<<type;
+                if(type==1) {
+                    if(id!=12) return 0;
+                    if(tlen==12) { if(rd16(b+tpos+8)!=0x800e || rd16(b+tpos+10)!=128) return 0; }
+                    else if(tlen==14) {
+                        if(rd16(b+tpos+8)!=14 || rd16(b+tpos+10)!=2 || rd16(b+tpos+12)!=128) return 0;
+                    } else return 0;
+                } else if(tlen!=8 || id!=(type==2?5:type==3?12:14)) return 0;
+                tpos+=tlen;
             }
+            if(types!=30) return 0;
             seen_sa=1;
         } else if(b[off+1]&0x80) return 0;
         next=b[off]; off+=len;
@@ -241,6 +249,10 @@ static size_t dns_request(unsigned char *b,const char *host,uint16_t id) {
     while(*p) {
         const char *dot=strchr(p,'.'); size_t len=dot?(size_t)(dot-p):strlen(p);
         if(!len || len>63 || n+len+6>512) return 0;
+        for(size_t i=0;i<len;i++) {
+            unsigned char c=(unsigned char)p[i];
+            if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_')) return 0;
+        }
         b[n++]=(unsigned char)len; memcpy(b+n,p,len); n+=len;
         if(!dot) break;
         p=dot+1; if(!*p) return 0;
@@ -256,14 +268,16 @@ static int parse_dns(const unsigned char *b,size_t n,uint16_t id,const char *hos
     size_t off=12; char question[254];
     if(!dns_name(b,n,&off,question) || strcasecmp(host,question) || off+4>n || rd16(b+off)!=1 || rd16(b+off+2)!=1) return -1;
     off+=4;
-    if(rcode==3) return 0;
-    if(answers>64) return -1;
+    unsigned total_records=answers+rd16(b+8)+rd16(b+10);
+    if(answers>64 || total_records>128) return -1;
     struct dns_record records[64]; unsigned nr=0;
-    for(unsigned i=0;i<answers;i++) {
+    for(unsigned i=0;i<total_records;i++) {
         struct dns_record rec; memset(&rec,0,sizeof rec);
         if(!dns_name(b,n,&off,rec.owner) || off+10>n) return -1;
         unsigned type=rd16(b+off),cls=rd16(b+off+2),len=rd16(b+off+8);
         off+=10; if(len>n-off) return -1;
+        if(cls==1 && type==1 && len!=4) return -1;
+        if(i>=answers) { off+=len; continue; }
         if(cls==1 && type==1 && len==4) { rec.type=1; memcpy(&rec.addr,b+off,4); records[nr++]=rec; }
         else if(cls==1 && type==5) {
             size_t tmp=off;
@@ -272,17 +286,23 @@ static int parse_dns(const unsigned char *b,size_t n,uint16_t id,const char *hos
         }
         off+=len;
     }
+    if(off!=n) return -1;
+    if(rcode==3) return 0;
     char current[254]; snprintf(current,sizeof current,"%s",host);
     for(int depth=0;depth<16;depth++) {
         int count=0; const char *alias=NULL;
         for(unsigned i=0;i<nr;i++) if(!strcasecmp(records[i].owner,current)) {
-            if(records[i].type==5) alias=records[i].target;
+            if(records[i].type==5) {
+                if(alias && strcasecmp(alias,records[i].target)) return -1;
+                alias=records[i].target;
+            }
             if(records[i].type==1 && count<MAX_IPS) {
                 int duplicate=0;
                 for(int j=0;j<count;j++) if(ips[j].s_addr==records[i].addr.s_addr) duplicate=1;
                 if(!duplicate) ips[count++]=records[i].addr;
             }
         }
+        if(count && alias) return -1;
         if(count) return count;
         if(!alias) return 0;
         snprintf(current,sizeof current,"%s",alias);
@@ -366,6 +386,7 @@ static int choose_country(FILE *input,FILE *output,char selected[64]) {
         if(!fgets(line,sizeof line,input)) return -1;
         if(!strchr(line,'\n') && !feof(input)) {
             int c; while((c=fgetc(input))!=EOF && c!='\n') {}
+            if(c==EOF) return -1;
             fputs("输入过长，请重新选择。\n",output); continue;
         }
         char *value=line; while(isspace((unsigned char)*value)) value++;
@@ -389,7 +410,7 @@ static void usage(void) {
          "只验证未认证 IKEv2 响应，不能证明 SIM 注册、通话、IPv6 或代理 UDP 转发可用。");
 }
 int main(int argc,char **argv) {
-    const char *filter=NULL,*host=NULL,*country=NULL; char selected[64]; int timeout_ms=1500,all=0;
+    const char *filter=NULL,*host=NULL,*country=NULL; char selected[64],normalized_host[254]; int timeout_ms=1500,all=0;
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--help")) { usage(); return 0; }
         if(!strcmp(argv[i],"--version")) { puts(VERSION); return 0; }
@@ -417,17 +438,30 @@ int main(int argc,char **argv) {
     }
     if(!country && !filter && !host && !all) {
         /* Piped installers consume stdin themselves; read the controlling tty. */
-        FILE *terminal=fopen("/dev/tty","r+");
+        FILE *terminal=fopen("/dev/tty","r");
         FILE *input=terminal?terminal:(isatty(STDIN_FILENO)?stdin:NULL);
         if(!input) {
             fputs("没有交互终端；请指定 --country 英国、--filter 名称、--host 地址或 --all。\n",stderr); return 2;
         }
-        int choice=choose_country(input,terminal?terminal:stderr,selected);
+        FILE *menu_output=terminal?fopen("/dev/tty","w"):NULL;
+        int choice=choose_country(input,menu_output?menu_output:stderr,selected);
+        if(menu_output) fclose(menu_output);
         if(terminal) fclose(terminal);
         if(choice<0) { puts("已取消检测。"); return 0; }
         if(choice) country=selected;
     }
-    if(host) { unsigned char q[512]; if(!dns_request(q,host,0)) { fputs("无效目标地址\n",stderr); return 2; } }
+    if(host) {
+        size_t n=strlen(host); if(n && host[n-1]=='.') n--;
+        if(!n || n>=sizeof normalized_host) { fputs("无效目标地址\n",stderr); return 2; }
+        memcpy(normalized_host,host,n); normalized_host[n]=0; host=normalized_host;
+        unsigned char q[512];
+        if(!dns_request(q,host,0)) { fputs("无效目标地址（仅支持 ASCII 域名或 IPv4）\n",stderr); return 2; }
+    }
+    if(filter) {
+        int matched=0;
+        for(size_t i=0;i<CARRIER_COUNT;i++) if(strstr(carriers[i].name,filter)) matched=1;
+        if(!matched) { fputs("筛选未匹配运营商；使用 --list 查看名称。\n",stderr); return 2; }
+    }
     if(!resolver_count) load_resolvers();
     setvbuf(stdout,NULL,_IOLBF,0);
     puts("============================================================\nWiFi Calling 网络探测 " VERSION " / 64 MB 低内存设计\n串行探测 IPv4；无需 root、Python、Docker、入站端口映射。\n有效响应只说明网关返回路径可达；超时表示未确认。\n============================================================");
