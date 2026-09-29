@@ -43,3 +43,17 @@ static const struct carrier { const char *name, *mcc, *mnc; } carriers[] = {
     {"菲律宾 Smart", "515", "003"},
     {"菲律宾 DITO", "515", "066"},
 };
+
+/* Menu grouping: UN M49 Asia / Europe / Americas. Pinyin sort keys are
+ * explicit so stripped musl binaries need no locale or transliteration data. */
+static const char *const continents[] = {"亚洲", "欧洲", "美洲"};
+static const struct country_info { const char *name, *pinyin; unsigned continent; } countries[] = {
+    {"德国", "deguo", 1}, {"法国", "faguo", 1},
+    {"意大利", "yidali", 1}, {"西班牙", "xibanya", 1},
+    {"英国", "yingguo", 1}, {"荷兰", "helan", 1},
+    {"比利时", "bilishi", 1}, {"瑞士", "ruishi", 1},
+    {"奥地利", "aodili", 1}, {"波兰", "bolan", 1},
+    {"瑞典", "ruidian", 1}, {"爱尔兰", "aierlan", 1},
+    {"葡萄牙", "putaoya", 1}, {"美国", "meiguo", 2},
+    {"加拿大", "jianada", 2}, {"菲律宾", "feilvbin", 0},
+};

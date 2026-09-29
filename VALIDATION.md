@@ -1,4 +1,4 @@
-# Validation — 2.2.0 protocol audit and readable results
+# Validation — 2.3.0 continent and country menu
 
 Reviewed main 3736952 (including the simplified README and appreciation image). README and user content are preserved.
 
@@ -11,6 +11,16 @@ Reviewed main 3736952 (including the simplified README and appreciation image). 
 - Reject target strings with spaces/control characters/unsupported IPv6 before sending; normalize a trailing DNS root dot. Unmatched filters now fail before DNS reference requests and DH computation.
 - Separate terminal input and output streams; avoid switching a C update stream from input to output without positioning. Stop immediately if EOF/error occurs while draining oversized menu input.
 
+## Two-level menu
+
+- First choose Asia, Europe or Americas, then choose a country in that region.
+- Country order uses explicit Chinese-pinyin keys (A-Z), independent of system locale. Ties in first letter are ordered by the full pinyin key.
+- Every country remains equally highlighted. Enter 0/b in the country menu to go back; only 0 at the continent menu selects all countries.
+- No carrier endpoints were added or removed: 16 countries, 42 carrier candidates. Countries absent from the existing inventory are not advertised.
+- Tests select every country by its displayed number, verify grouping and ordering, compare menu coverage to the carrier inventory, reject cross-region names, exercise back/EOF/invalid input, and verify two-stage interaction when stdin is a pipe.
+- --country, --filter, --host, --all and --details retain their existing behavior.
+- Grouping reference: https://unstats.un.org/unsd/methodology/m49/
+
 ## Display changes
 
 - All country/carrier labels use the same bold cyan color on a terminal.
@@ -21,7 +31,7 @@ Reviewed main 3736952 (including the simplified README and appreciation image). 
 ## Evidence
 
 - Five added regression methods failed on the pre-fix code as expected.
-- All 49 local tests pass with ASan/UBSan. Clang static analysis reports no warnings.
+- All 51 local tests pass with ASan/UBSan. Clang static analysis reports no warnings.
 - Tests include positive protocol packets, malformed packets, loopback UDP, menu/PTY pipe interaction, country selection, launcher failures and binary hash checks.
 - Zig 0.13.0 cross-builds static x86_64 and aarch64 Linux binaries; hashes are updated together.
 - GitHub Actions runs the same tests on Linux, plus 64 MiB/no-swap Alpine/Debian/Ubuntu containers and a byte-identical source rebuild. Consult Actions for the exact release commit.
