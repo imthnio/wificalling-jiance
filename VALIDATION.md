@@ -1,4 +1,4 @@
-# Validation — 2.3.0 continent and country menu
+# Validation — 2.3.1 giffgaff addition
 
 Reviewed main 3736952 (including the simplified README and appreciation image). README and user content are preserved.
 
@@ -16,7 +16,7 @@ Reviewed main 3736952 (including the simplified README and appreciation image). 
 - First choose Asia, Europe or Americas, then choose a country in that region.
 - Country order uses explicit Chinese-pinyin keys (A-Z), independent of system locale. Ties in first letter are ordered by the full pinyin key.
 - Every country remains equally highlighted. Enter 0/b in the country menu to go back; only 0 at the continent menu selects all countries.
-- No carrier endpoints were added or removed: 16 countries, 42 carrier candidates. Countries absent from the existing inventory are not advertised.
+- Added giffgaff under UK: 16 countries, 43 carrier labels (42 unique PLMN candidates; O2 and giffgaff share 234-010). Countries absent from the existing inventory are not advertised.
 - Tests select every country by its displayed number, verify grouping and ordering, compare menu coverage to the carrier inventory, reject cross-region names, exercise back/EOF/invalid input, and verify two-stage interaction when stdin is a pipe.
 - --country, --filter, --host, --all and --details retain their existing behavior.
 - Grouping reference: https://unstats.un.org/unsd/methodology/m49/
@@ -43,3 +43,9 @@ This is an unauthenticated IPv4 IKE return-path probe. It does not validate SIM 
 DNS does not implement TCP fallback, /etc/hosts or search domains. CNAME resolution currently expects the final A record in the same Answer section; a CNAME-only answer may remain unresolved. No actual NAT VPS or phone call was tested in this audit.
 
 Protocol references: https://www.rfc-editor.org/rfc/inline-errata/rfc7296.html and https://www.rfc-editor.org/rfc/inline-errata/rfc1035.html
+
+## giffgaff sources
+
+Official Wi-Fi Calling support: https://help.giffgaff.com/en/articles/258841-understanding-wifi-calling-and-volte
+Official MCC 234 / MNC 10: https://help.giffgaff.com/en/articles/245215-internet-apn-settings-guide
+The candidate ePDG name is derived from those codes; these sources do not certify a live ePDG endpoint or successful SIM registration. UK now has 5 carrier labels.

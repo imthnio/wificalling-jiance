@@ -1,11 +1,11 @@
 #!/bin/sh
 # WiFi Calling v2: tiny static native probe, no package manager or root required.
 set -eu
-HASH_x86_64=c521452d716463eebfa6e192019bc67fd112f25b08afedcf7614dc58d1d17d08
-HASH_aarch64=e3b90684046b67269b7a1c81d145cd997f368d7cd80801ab1182cd316e7147f6
+HASH_x86_64=040a64677651e38ccab6e2f7387b8f28feceeca381732672b8f6c14718d115cc
+HASH_aarch64=a0e2a5dd2399cfc1a74bf833eab496721bc5aa080bf19a19e6599cdfd09fb1a2
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 if [ "${1:-}" = --help ]; then
-    printf '%s\n' 'WiFi Calling 2.3.0 / 64 MB 低内存设计' \
+    printf '%s\n' 'WiFi Calling 2.3.1 / 64 MB 低内存设计' \
         '用法: sh check.sh [--country 英国 | --all | --filter 英国] [--host 域名或IPv4] [--dns DNS地址] [--timeout 毫秒]' \
         '默认先选洲，再按拼音 A–Z 选国家；--country 跳过菜单，--all 才扫描全部。' \
         '--details 显示技术明细；NO_COLOR=1 关闭终端颜色。' \
@@ -13,7 +13,7 @@ if [ "${1:-}" = --help ]; then
         '不安装软件、不修改防火墙、不创建 swap；结果仅表示 IKE 返回路径证据。'
     exit 0
 fi
-if [ "${1:-}" = --version ]; then printf '%s\n' 2.3.0; exit 0; fi
+if [ "${1:-}" = --version ]; then printf '%s\n' 2.3.1; exit 0; fi
 [ "$(uname -s)" = Linux ] || fail '此入口用于 Linux VPS。其他系统可从 src/check.c 自行编译。'
 case "$(uname -m)" in
     x86_64|amd64) arch=x86_64; expected=$HASH_x86_64 ;;

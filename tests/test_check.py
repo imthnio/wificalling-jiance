@@ -236,11 +236,11 @@ class ProtocolTests(unittest.TestCase):
                              capture_output=True,text=True,timeout=10)
             self.assertEqual(p.returncode,0,p.stderr)
             rows=[row for row in p.stdout.splitlines() if row.startswith('[')]
-            self.assertEqual(len(rows),4 if country=='英国' else 3)
+            self.assertEqual(len(rows),5 if country=='英国' else 3)
             self.assertTrue(all(row.startswith('['+country+' ') for row in rows))
         p=subprocess.run([BINARY,'--all','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=10)
         self.assertEqual(p.returncode,0,p.stderr)
-        self.assertIn('共检查 42 家',p.stdout)
+        self.assertIn('共检查 43 家',p.stdout)
 
     def test_piped_stdin_still_reads_country_from_terminal(self):
         pid,fd=pty.fork()
@@ -386,7 +386,7 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn('共检查 3 家',plain)
 
     def test_carrier_list_and_version(self):
-        self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),42)
-        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.3.0')
+        self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),43)
+        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.3.1')
 
 if __name__=='__main__': unittest.main(verbosity=2)

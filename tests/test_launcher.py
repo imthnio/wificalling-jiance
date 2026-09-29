@@ -57,7 +57,7 @@ class LauncherTests(unittest.TestCase):
     def test_http_override_refused(self): self.assertNotEqual(self.run_script(WIFICALLING_BASE_URL='http://example.com').returncode,0)
     def test_help_and_version_do_not_download(self):
         self.assertEqual(self.run_script('--help',FAKE_OS='Darwin',BAD_DOWNLOAD='1').returncode,0)
-        self.assertEqual(self.run_script('--version',BAD_DOWNLOAD='1').stdout.strip(),'2.3.0')
+        self.assertEqual(self.run_script('--version',BAD_DOWNLOAD='1').stdout.strip(),'2.3.1')
     def test_hash_manifest_matches_binaries_and_launcher(self):
         s=(ROOT/'check.sh').read_text()
         for row in (ROOT/'SHA256SUMS').read_text().splitlines():

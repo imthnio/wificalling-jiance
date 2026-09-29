@@ -15,6 +15,8 @@ static const struct carrier { const char *name, *mcc, *mnc; } carriers[] = {
     {"西班牙 Vodafone", "214", "001"},
     {"英国 EE", "234", "030"},
     {"英国 O2", "234", "010"},
+    /* giffgaff official MCC/MNC: 234/10; PLMN-derived candidate, not SIM validation. */
+    {"英国 giffgaff", "234", "010"},
     {"英国 Vodafone", "234", "015"},
     {"英国 Three", "234", "020"},
     {"荷兰 KPN", "204", "008"},

@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define VERSION "2.3.0"
+#define VERSION "2.3.1"
 #define MAX_IPS 2
 #define MAX_DNS 4
 #define DNS_SIZE 4096
