@@ -4,8 +4,8 @@
 set -eu
 # 程序与 check.sh 在同一分支发布，SHA-256 校验保证二者匹配。
 BASE_URL=${WIFICALLING_BASE_URL:-https://raw.githubusercontent.com/imthnio/wificalling-jiance/main}
-HASH_x86_64=
-HASH_aarch64=
+HASH_x86_64=e0d4dab25018f42d5fbc93ccca803d0115ea9275ee65e7958f1be9397d31fda7
+HASH_aarch64=3c733e1cd93d6e00d393d2144b54222d6f8359bb9dc366fd1c85ec10e9a55f04
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 [ "$(uname -s)" = Linux ] || fail '此脚本用于 Linux VPS。'
