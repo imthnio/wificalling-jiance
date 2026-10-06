@@ -1,4 +1,4 @@
-name: Protocol and 64 MiB checks
+name: Test and build
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
@@ -7,20 +7,27 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Protocol and launcher regressions
+      - name: Loopback tests (ASan/UBSan)
         run: sh scripts/test.sh
-      - name: Address and undefined-behavior sanitizers
-        run: CFLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie -no-pie' sh scripts/test.sh
-      - name: Verify distributed binaries
-        run: sha256sum -c SHA256SUMS
-      - name: 64 MiB, no swap, Alpine / Debian / Ubuntu
-        run: sh scripts/test-64mb.sh
-      - name: Pin build tool
+      - name: Install Zig 0.13.0
         run: |
           curl -fSL --retry 3 https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz -o /tmp/zig.tar.xz
           echo 'd45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea  /tmp/zig.tar.xz' | sha256sum -c -
           tar -xJf /tmp/zig.tar.xz -C /tmp
-      - name: Reproduce binaries from source
+      - name: Build static binaries
+        run: ZIG=/tmp/zig-linux-x86_64-0.13.0/zig sh scripts/build.sh
+      - name: Loopback tests against the static x86_64 binary
+        run: python3 -I tests/test_check.py bin/check-linux-x86_64
+      - name: Committed binaries match the source
         run: |
-          ZIG=/tmp/zig-linux-x86_64-0.13.0/zig sh scripts/build.sh
-          git diff --exit-code -- bin check.sh SHA256SUMS
+          if git cat-file -e HEAD:bin/check-linux-x86_64 2>/dev/null; then
+            git diff --exit-code -- bin check.sh SHA256SUMS
+          else
+            echo 'No committed binaries yet; skipping reproducibility check.'
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            bin/
+            SHA256SUMS

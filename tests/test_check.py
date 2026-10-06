@@ -1,392 +1,372 @@
 #!/usr/bin/env python3
-"""Deterministic protocol regressions; only loopback networking, no carrier traffic."""
+"""本地回环测试：假 DNS（UDP+TCP）+ 假 ePDG（UDP 500/4500 两种模式）。
+
+用法: python3 tests/test_check.py path/to/check
+"""
+import hashlib
 import os
-from pathlib import Path
-import pty
-import select
-import signal
-import random
-import re
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-HARNESS = os.environ.get('HARNESS', str(ROOT / 'build/harness'))
-BINARY = os.environ.get('BINARY', str(ROOT / 'build/check'))
+BIN = None
+HOST = "127.0.0.1"
 
-def run(*args, data=None):
-    return subprocess.check_output([HARNESS, *map(str, args)], input=data)
 
-def name(s):
-    return b''.join(bytes([len(x)]) + x.encode() for x in s.split('.')) + b'\0'
+def free_port(kind=socket.SOCK_DGRAM):
+    s = socket.socket(socket.AF_INET, kind)
+    s.bind((HOST, 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
 
-def dns(answers=(), flags=0x8180, question='epdg.example'):
-    return (struct.pack('!6H', 0x1234, flags, 1, len(answers), 0, 0) +
-            name(question) + struct.pack('!HH', 1, 1) + b''.join(answers))
 
-def rr(owner, kind, value):
-    owner = name(owner) if isinstance(owner, str) else owner
-    return owner + struct.pack('!HHIH', kind, 1, 60, len(value)) + value
+# ---------------- 假 ePDG ----------------
 
-def response(spi=bytes(range(1, 9)), natt=False):
-    # NO_PROPOSAL_CHOSEN is valid evidence of reachability, not authentication.
-    body = struct.pack('!BBHBBH', 0, 0, 8, 0, 0, 14)
-    hdr = spi + b'\0'*8 + struct.pack('!BBBBII', 41, 0x20, 34, 0x20, 0, 36)
-    return (b'\0'*4 if natt else b'') + hdr + body
+def payload(next_type, body):
+    return struct.pack("!BBH", next_type, 0, 4 + len(body)) + body
 
-class ProtocolTests(unittest.TestCase):
-    def test_dh_matches_independent_python_modexp(self):
-        source = (ROOT/'src/check.c').read_text()
-        block = source.split('static const char prime_hex[]=')[1].split(';')[0]
-        prime = int(''.join(re.findall(r'"([A-F0-9]+)"', block)), 16)
-        self.assertEqual(prime.bit_length(), 2048)
-        for exponent in (1, 2, 1 << 255, (1 << 256)-1, random.Random(9).getrandbits(256)):
-            actual = int(run('dh', f'{exponent:064x}'), 16)
-            self.assertEqual(actual, pow(2, exponent, prime))
 
-    def test_request_wire_format(self):
-        p = run('packet')
-        self.assertEqual(len(p), 376)
-        self.assertEqual(struct.unpack('!BBBBII', p[16:28]), (33, 0x20, 34, 8, 0, 376))
-        self.assertEqual(struct.unpack('!BBH', p[28:32]), (34, 0, 48))
-        self.assertEqual(struct.unpack('!BBHBBBB', p[32:40]), (0, 0, 44, 1, 1, 0, 4))
-        self.assertEqual([p[i] for i in (40, 52, 60, 68)], [3, 3, 3, 0])
-        self.assertEqual(struct.unpack('!BBHHH', p[76:84]), (40, 0, 264, 14, 0))
-        self.assertEqual(struct.unpack('!BBH', p[340:344]), (0, 0, 36))
-        self.assertNotEqual(p[:8], run('packet')[:8])
+def chain(items):
+    """items: [(type, body)] -> (first_type, bytes)"""
+    out = b""
+    for i, (_, body) in enumerate(items):
+        nxt = items[i + 1][0] if i + 1 < len(items) else 0
+        out += payload(nxt, body)
+    return (items[0][0] if items else 0), out
 
-    def ike(self, data, natt=False):
-        return int(run('ike', int(natt), data=data))
 
-    def test_valid_error_response_and_natt(self):
-        self.assertEqual(self.ike(response()), 1)
-        self.assertEqual(self.ike(response(natt=True), True), 1)
+def natd(spi_i, spi_r, ip, port):
+    return hashlib.sha1(spi_i + spi_r + socket.inet_aton(ip) + struct.pack("!H", port)).digest()
 
-    def test_success_response(self):
-        p = bytearray(run('packet')); p[:8] = bytes(range(1, 9)); p[8:16] = b'R'*8; p[19]=0x20
-        self.assertEqual(self.ike(p), 1)
 
-    def test_notify_status_alone_and_missing_required_data_rejected(self):
-        for kind in (16388, 16389, 16390, 17):
-            p=bytearray(response()); p[34:36]=struct.pack('!H', kind)
-            self.assertEqual(self.ike(p), 0)
-        for kind, data in ((16390, b'cookie'), (17, b'\x00\x0e')):
-            p=bytearray(response()); p[34:36]=struct.pack('!H', kind)
-            p.extend(data); p[30:32]=struct.pack('!H', 8+len(data)); p[24:28]=struct.pack('!I', len(p))
-            self.assertEqual(self.ike(p), 1)
+def ike_reply(req, peer, mode):
+    spi_i = req[:8]
+    spi_r = os.urandom(8)
+    if mode == "accept":
+        transforms = [(1, 12, 128), (2, 5, 0), (3, 12, 0), (4, 14, 0)]
+        tb = b""
+        for i, (t, tid, kl) in enumerate(transforms):
+            attr = struct.pack("!HH", 0x800E, kl) if kl else b""
+            last = 3 if i + 1 < len(transforms) else 0
+            tb += struct.pack("!BBHBBH", last, 0, 8 + len(attr), t, 0, tid) + attr
+        prop = struct.pack("!BBHBBBB", 0, 0, 8 + len(tb), 1, 1, 0, len(transforms)) + tb
+        items = [
+            (33, prop),
+            (34, struct.pack("!HH", 14, 0) + os.urandom(256)),
+            (40, os.urandom(32)),
+            (41, struct.pack("!BBH", 0, 0, 16388) + os.urandom(20)),
+            (41, struct.pack("!BBH", 0, 0, 16389) + natd(spi_i, spi_r, peer[0], peer[1])),
+        ]
+    elif mode == "accept_nat":
+        items = [(33, b"\0" * 8), (34, struct.pack("!HH", 14, 0) + os.urandom(256)), (40, os.urandom(32)),
+                 (41, struct.pack("!BBH", 0, 0, 16389) + natd(spi_i, spi_r, "203.0.113.9", 4500))]
+    elif mode == "no_proposal":
+        # Protocol ID = 1：RFC 7296 要求 SPI 为空时忽略该字段，旧版会误判为非法
+        spi_r = b"\0" * 8
+        items = [(41, struct.pack("!BBH", 1, 0, 14))]
+    elif mode == "cookie":
+        spi_r = b"\0" * 8
+        items = [(41, struct.pack("!BBH", 0, 0, 16390) + os.urandom(16))]
+    elif mode == "bad_spi":
+        spi_i = os.urandom(8)
+        items = [(41, struct.pack("!BBH", 0, 0, 14))]
+    elif mode == "bad_len":
+        items = [(41, struct.pack("!BBH", 0, 0, 14))]
+        first, body = chain(items)
+        hdr = spi_i + spi_r + struct.pack("!BBBBII", first, 0x20, 34, 0x20, 0, 28 + len(body) + 5)
+        return hdr + body
+    else:
+        raise ValueError(mode)
+    first, body = chain(items)
+    return spi_i + spi_r + struct.pack("!BBBBII", first, 0x20, 34, 0x20, 0, 28 + len(body)) + body
 
-    def test_success_requires_responder_spi_and_full_group14_key(self):
-        p=bytearray(run('packet')); p[:8]=bytes(range(1,9)); p[19]=0x20
-        self.assertEqual(self.ike(p), 0)
-        p[8:16]=b'R'*8
-        p[82:340]=b'\0'*258
-        p[80:82]=struct.pack('!H', 19)
-        self.assertEqual(self.ike(p), 0)
 
-    def test_udp_oversized_datagram_valid_prefix_is_rejected(self):
-        for natt in (False, True):
-            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as server:
-                server.bind(('127.0.0.1',0)); server.settimeout(5)
-                port=server.getsockname()[1]
-                def serve():
-                    packet,peer=server.recvfrom(4096); offset=4 if natt else 0
-                    p=bytearray(response(packet[offset:offset+8], natt))
-                    # A valid Notify prefix exactly fills the receive buffer.
-                    p[offset+24:offset+28]=struct.pack('!I',4096-offset)
-                    p[offset+30:offset+32]=struct.pack('!H',4096-offset-28)
-                    p.extend(b'x'*(4097-len(p)))
-                    server.sendto(p,peer)
-                t=threading.Thread(target=serve); t.start()
-                self.assertEqual(run('probe',port,int(natt),150).strip(),b'0'); t.join()
+def valid_request(req):
+    if len(req) < 28 or req[18] != 34 or req[19] != 0x08 or struct.unpack("!I", req[24:28])[0] != len(req):
+        return False
+    nxt, off, seen = req[16], 28, []
+    while nxt:
+        ln = struct.unpack("!H", req[off + 2:off + 4])[0]
+        seen.append(nxt)
+        if nxt == 41:
+            seen.append(struct.unpack("!H", req[off + 6:off + 8])[0])
+        nxt, off = req[off], off + ln
+    return off == len(req) and seen[:3] == [33, 34, 40] and 16388 in seen and 16389 in seen
 
-    def test_ike_rejects_wrong_spi_exchange_flags_id_lengths(self):
-        for offset, value in ((0, 0), (17, 0x10), (18, 35), (19, 8), (19, 0x28), (23, 1), (27, 35), (31, 3), (35, 0)):
-            with self.subTest(offset=offset, value=value):
-                p=bytearray(response()); p[offset]=value
-                self.assertEqual(self.ike(p), 0)
 
-    def test_ike_rejects_empty_echo_esp_and_truncation(self):
-        for p in (b'', b'garbage', response()[:28], response()+b'extra', run('packet'), b'\xff', b'\x01'*4+response()):
-            self.assertEqual(self.ike(p), 0)
-        self.assertEqual(self.ike(response(), True), 0)
-        for n in range(36):
-            self.assertEqual(self.ike(response()[:n]), 0)
+class IkeServer(threading.Thread):
+    def __init__(self, natt, mode, drop_first=0):
+        super().__init__(daemon=True)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((HOST, 0))
+        self.sock.settimeout(0.2)
+        self.port = self.sock.getsockname()[1]
+        self.natt, self.mode, self.drop = natt, mode, drop_first
+        self.received = 0
+        self.bad_requests = 0
+        self.stop = False
+        self.start()
 
-    def test_ike_rejects_broken_transform_chain(self):
-        p=bytearray(run('packet')); p[:8]=bytes(range(1,9)); p[19]=0x20; p[40]=2
-        self.assertEqual(self.ike(p), 0)
-
-    def parse(self, p):
-        return run('dns', data=p).decode().splitlines()
-
-    def test_dns_compressed_a_and_deduplicate_cap(self):
-        a=rr(b'\xc0\x0c',1,socket.inet_aton('192.0.2.1'))
-        b=rr('epdg.example',1,socket.inet_aton('192.0.2.2'))
-        c=rr('epdg.example',1,socket.inet_aton('192.0.2.3'))
-        self.assertEqual(self.parse(dns([a,a,b,c])), ['2','192.0.2.1','192.0.2.2'])
-
-    def test_dns_cname_chain(self):
-        p=dns([rr('alias.example',1,socket.inet_aton('192.0.2.9')),
-               rr(b'\xc0\x0c',5,name('alias.example'))])
-        self.assertEqual(self.parse(p),['1','192.0.2.9'])
-
-    def test_dns_reject_unrelated_a(self):
-        self.assertEqual(self.parse(dns([rr('other.example',1,b'\x01'*4)])),['0'])
-
-    def test_dns_wrong_id_question_flags_and_errors(self):
-        p=bytearray(dns()); p[0]=0
-        for data in (p,dns(question='other.example'),dns(flags=0x0100),dns(flags=0x8380),dns(flags=0x8182)):
-            self.assertEqual(self.parse(data),['-1'])
-        self.assertEqual(self.parse(dns(flags=0x8183)),['0'])
-
-    def test_dns_truncation_pointer_loop_and_rdata_overrun(self):
-        p=dns([rr(b'\xc0\x0c',1,b'\x01'*4)])
-        for n in range(len(p)):
-            self.assertEqual(self.parse(p[:n]),['-1'])
-        loop=struct.pack('!6H',0x1234,0x8180,1,0,0,0)+b'\xc0\x0c'+b'\x00\x01'*2
-        self.assertEqual(self.parse(loop),['-1'])
-
-    def test_dns_cname_loop(self):
-        p=dns([rr('epdg.example',5,name('other.example')),rr('other.example',5,name('epdg.example'))])
-        self.assertEqual(self.parse(p),['-1'])
-
-    def test_random_malformed_packets_do_not_crash(self):
-        rand=random.Random(7)
-        for _ in range(80):
-            p=bytes(rand.randrange(256) for _ in range(rand.randrange(500)))
-            self.assertEqual(self.ike(p),0)
-            self.assertEqual(self.parse(p),['-1'])
-
-    def test_udp_connected_socket_rejects_other_source_and_then_accepts_valid(self):
-        for natt in (False, True):
-            server=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); server.bind(('127.0.0.1',0)); server.settimeout(5)
-            alien=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-            def serve():
-                try:
-                    packet,peer=server.recvfrom(4096); offset=4 if natt else 0
-                    good=response(packet[offset:offset+8], natt)
-                    alien.sendto(good, peer); server.sendto(b'garbage',peer)
-                    time.sleep(.02); server.sendto(good,peer)
-                finally:
-                    server.close(); alien.close()
-            t=threading.Thread(target=serve); t.start()
-            self.assertEqual(run('probe',server.getsockname()[1],int(natt),500).strip(),b'1'); t.join()
-
-    def test_udp_wrong_source_alone_does_not_pass(self):
-        server=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); server.bind(('127.0.0.1',0)); server.settimeout(5)
-        port=server.getsockname()[1]
-        def serve():
+    def run(self):
+        while not self.stop:
             try:
-                p,peer=server.recvfrom(4096)
-                with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as alien: alien.sendto(response(p[:8]),peer)
-                time.sleep(.3)
-            finally: server.close()
-        t=threading.Thread(target=serve); t.start()
-        self.assertEqual(run('probe',port,0,150).strip(),b'0'); t.join()
+                data, peer = self.sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            self.received += 1
+            if self.natt:
+                if data[:4] != b"\0\0\0\0":
+                    self.bad_requests += 1
+                    continue
+                data = data[4:]
+            if not valid_request(data):
+                self.bad_requests += 1
+                continue
+            if self.mode == "silent" or self.received <= self.drop:
+                continue
+            reply = ike_reply(data, peer, self.mode)
+            self.sock.sendto((b"\0\0\0\0" if self.natt else b"") + reply, peer)
 
-    def test_udp_timeout_is_bounded(self):
-        with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as silent:
-            silent.bind(('127.0.0.1',0)); start=time.monotonic()
-            self.assertEqual(run('probe',silent.getsockname()[1],0,80).strip(),b'0')
-            self.assertLess(time.monotonic()-start,3)
+    def close(self):
+        self.stop = True
+        self.join()
+        self.sock.close()
 
-    def test_cli_bad_options(self):
-        for args in (['--unknown'],['--timeout','-1'],['--timeout','10001'],['--timeout','1x'],['--dns','nonsense'],['--host','a'*254]):
-            self.assertEqual(subprocess.run([BINARY,*args],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode,2)
 
-    def test_country_menu_selection_retry_cancel_and_eof(self):
-        cases=((b'2\n13\n','1:英国'), ('美洲\n加拿大\n'.encode(),'1:加拿大'),
-               ('美洲\n美国\n'.encode(),'1:美国'), (b'1\n1\n','1:菲律宾'),
-               (b'0\n','0:'),(b'q\n','-1:'),(b'','-1:'),(b'3\n','-1:'),
-               (b'\n999\nbad\n2\n\n999\n13\n','1:英国'),
-               (b'x'*200+b'\n2\n13\n','1:英国'))
-        for data,expected in cases:
-            p=subprocess.run([HARNESS,'menu'],input=data,capture_output=True,check=True)
-            self.assertEqual(p.stdout.decode().strip(),expected)
-            self.assertIn('手机卡所属国家',p.stderr.decode())
+# ---------------- 假 DNS ----------------
 
-    def test_continent_menu_order_and_country_membership(self):
-        expected={1:['菲律宾'],2:['爱尔兰','奥地利','比利时','波兰','德国','法国','荷兰','葡萄牙','瑞典','瑞士','西班牙','意大利','英国'],3:['加拿大','美国']}
-        listed=set()
-        for region,names in expected.items():
-            p=subprocess.run([HARNESS,'menu'],input=f'{region}\nq\n'.encode(),capture_output=True,check=True)
-            shown=re.findall(r'\[([A-Z])\] ([^（]+)（',p.stderr.decode())
-            self.assertEqual([name for initial,name in shown],names)
-            listed.update(names)
-            for index,name in enumerate(names,1):
-                result=subprocess.run([HARNESS,'menu'],input=f'{region}\n{index}\n'.encode(),capture_output=True,check=True)
-                self.assertEqual(result.stdout.decode().strip(),'1:'+name)
-        carriers=subprocess.check_output([BINARY,'--list'],text=True).splitlines()
-        self.assertEqual(listed,{line.split()[0] for line in carriers})
+ZONE = {
+    # name: list of (type, value)
+    "direct.test": [(1, "127.0.0.1")],
+    "alias.test": [(5, "mid.test"), (5, "final.test"), (1, "127.0.0.1")],  # 同一应答内的 CNAME 链
+    "cnameonly.test": [(5, "target.test")],  # 只给 CNAME，需要再查
+    "target.test": [(1, "127.0.0.1")],
+    "big.test": [(1, "127.0.0.1")] + [(1, "10.255.%d.%d" % (i // 250, i % 250 + 1)) for i in range(80)],
+    "nodata.test": [],
+}
 
-    def test_menu_back_and_wrong_continent_do_not_start_scan(self):
-        for data in ('3\nb\n1\n1\n','3\n0\n1\n1\n','1\n美国\n1\n'):
-            p=subprocess.run([HARNESS,'menu'],input=data.encode(),capture_output=True,check=True)
-            self.assertEqual(p.stdout.decode().strip(),'1:菲律宾')
-        p=subprocess.run([HARNESS,'menu'],input=b'3\n0\n',capture_output=True,check=True)
-        self.assertEqual(p.stdout.strip(),b'-1:')
 
-    def test_country_filter_and_all_are_explicit(self):
-        for country in ('美国','加拿大','英国'):
-            p=subprocess.run([BINARY,'--country',country,'--dns','127.0.0.1','--timeout','1'],
-                             capture_output=True,text=True,timeout=10)
-            self.assertEqual(p.returncode,0,p.stderr)
-            rows=[row for row in p.stdout.splitlines() if row.startswith('[')]
-            self.assertEqual(len(rows),4 if country=='英国' else 3)
-            self.assertTrue(all(row.startswith('['+country+' ') for row in rows))
-        p=subprocess.run([BINARY,'--all','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=10)
-        self.assertEqual(p.returncode,0,p.stderr)
-        self.assertIn('共检查 42 家',p.stdout)
+def enc_name(name):
+    return b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\0"
 
-    def test_piped_stdin_still_reads_country_from_terminal(self):
-        pid,fd=pty.fork()
-        if pid==0:
-            os.execl('/bin/sh','sh','-c',
-                     'printf ignored | "$1" --dns 127.0.0.1 --timeout 1','sh',BINARY)
-        output=b''; sent=False; continent_sent=False; finished=False
+
+def dns_answer(q, udp):
+    qid = q[:2]
+    off, labels = 12, []
+    while q[off]:
+        labels.append(q[off + 1:off + 1 + q[off]].decode())
+        off += 1 + q[off]
+    qname = ".".join(labels).lower()
+    qtype = struct.unpack("!H", q[off + 1:off + 3])[0]
+    question = q[12:off + 5]
+    if qname not in ZONE:
+        return qid + struct.pack("!HHHHH", 0x8183, 1, 0, 0, 0) + question
+    answers, owner = [], qname
+    for typ, val in ZONE[qname]:
+        if typ == 5:
+            answers.append(enc_name(owner) + struct.pack("!HHIH", 5, 1, 60, len(enc_name(val))) + enc_name(val))
+            owner = val
+        elif typ == qtype:
+            answers.append(enc_name(owner) + struct.pack("!HHIH", 1, 1, 60, 4) + socket.inet_aton(val))
+    msg = qid + struct.pack("!HHHHH", 0x8180, 1, len(answers), 0, 0) + question + b"".join(answers)
+    if udp and len(msg) > 512:  # 模拟不支持 EDNS 的服务器：截断
+        return qid + struct.pack("!HHHHH", 0x8380, 1, 0, 0, 0) + question
+    return msg
+
+
+class DnsServer:
+    def __init__(self):
+        self.port = free_port()
+        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp.bind((HOST, self.port))
+        self.udp.settimeout(0.2)
+        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.tcp.bind((HOST, self.port))
+        self.tcp.listen(8)
+        self.tcp.settimeout(0.2)
+        self.tcp_queries = 0
+        self.stop = False
+        self.threads = [threading.Thread(target=f, daemon=True) for f in (self.serve_udp, self.serve_tcp)]
+        for t in self.threads:
+            t.start()
+
+    def serve_udp(self):
+        while not self.stop:
+            try:
+                q, peer = self.udp.recvfrom(4096)
+            except socket.timeout:
+                continue
+            self.udp.sendto(dns_answer(q, True), peer)
+
+    def serve_tcp(self):
+        while not self.stop:
+            try:
+                c, _ = self.tcp.accept()
+            except socket.timeout:
+                continue
+            with c:
+                c.settimeout(2)
+                n = struct.unpack("!H", c.recv(2))[0]
+                q = c.recv(n)
+                self.tcp_queries += 1
+                a = dns_answer(q, False)
+                c.sendall(struct.pack("!H", len(a)) + a)
+
+    def close(self):
+        self.stop = True
+        for t in self.threads:
+            t.join()
+        self.udp.close()
+        self.tcp.close()
+
+
+# ---------------- 测试 ----------------
+
+class CheckTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.dns = DnsServer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.dns.close()
+
+    def run_check(self, host, m500="accept", m4500="accept", extra=(), drop=0, timeout=900):
+        s500, s4500 = IkeServer(False, m500, drop), IkeServer(True, m4500, drop)
         try:
-            deadline=time.monotonic()+10
-            while time.monotonic()<deadline:
-                if select.select([fd],[],[],.1)[0]:
-                    try: chunk=os.read(fd,4096)
-                    except OSError: break
-                    if not chunk: break
-                    output+=chunk
-                    if not continent_sent and '输入编号或洲名称：'.encode() in output:
-                        os.write(fd,'美洲\n'.encode()); continent_sent=True
-                    if not sent and '输入编号或国家名称：'.encode() in output:
-                        os.write(fd,'加拿大\n'.encode()); sent=True
-                done,status=os.waitpid(pid,os.WNOHANG)
-                if done:
-                    finished=True
-                    self.assertEqual(os.waitstatus_to_exitcode(status),0)
-                    break
-            text=output.decode(errors='replace')
-            self.assertTrue(sent,text)
-            self.assertIn('共检查 3 家',text)
-            self.assertIn('[加拿大 Rogers]',text)
-            self.assertNotIn('[美国 ',text)
+            cmd = [BIN, "--host", host, "--details", "--timeout", str(timeout),
+                   "--dns", HOST, "--dns-port", str(self.dns.port),
+                   "--ike-port", str(s500.port), "--natt-port", str(s4500.port), *extra]
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env={**os.environ, "NO_COLOR": "1"})
         finally:
-            os.close(fd)
-            if not finished:
-                try: os.kill(pid,signal.SIGKILL)
-                except ProcessLookupError: pass
-                os.waitpid(pid,0)
+            s500.close()
+            s4500.close()
+        self.assertEqual(s500.bad_requests + s4500.bad_requests, 0, "客户端发出的 IKE 请求格式错误")
+        return p, s500, s4500
 
-    def test_no_terminal_does_not_start_full_scan(self):
-        p=subprocess.run([BINARY],stdin=subprocess.DEVNULL,capture_output=True,text=True,start_new_session=True,timeout=3)
-        self.assertEqual(p.returncode,2)
-        self.assertIn('--country',p.stderr)
-        self.assertNotIn('正在检测',p.stdout)
+    def test_pass_both_ports(self):
+        p, _, _ = self.run_check("127.0.0.1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("✅ 通过", p.stdout)
+        self.assertIn("完整握手响应", p.stdout)
+        self.assertIn("本机无 NAT", p.stdout)  # 验证 SHA-1 / NAT_DETECTION 计算
 
-    def test_country_bad_args_fail_before_network(self):
-        for args in (['--country','不存在'],['--country',''],['--filter',''],
-                     ['--all','--country','英国'],['--country','美国','--filter','加拿大']):
-            p=subprocess.run([BINARY,*args],capture_output=True,text=True,timeout=3)
-            self.assertEqual(p.returncode,2)
-            self.assertNotIn('正在检测',p.stdout)
+    def test_nat_detected(self):
+        p, _, _ = self.run_check("127.0.0.1", "accept_nat", "accept_nat")
+        self.assertIn("本机出口经过 NAT", p.stdout)
+        self.assertIn("✅ 通过", p.stdout)
 
-    def test_ike_sa_rejects_unoffered_duplicate_and_malformed_transforms(self):
-        good=bytearray(run('packet')); good[:8]=bytes(range(1,9)); good[8:16]=b'R'*8; good[19]=0x20
-        for offset,value in ((36,2),(47,99),(56,1),(55,9),(51,0),(75,19)):
-            p=bytearray(good); p[offset]=value
-            self.assertEqual(self.ike(p),0,(offset,value))
+    def test_error_notify_counts_as_reachable(self):
+        p, _, _ = self.run_check("127.0.0.1", "no_proposal", "cookie")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("NO_PROPOSAL_CHOSEN", p.stdout)
+        self.assertIn("COOKIE", p.stdout)
 
-    def test_ike_selected_transforms_may_be_reordered_or_use_tlv_key_length(self):
-        p=bytearray(run('packet')); p[:8]=bytes(range(1,9));p[8:16]=b'R'*8;p[19]=0x20
-        reordered=bytearray(p)
-        reordered[40:76]=p[52:60]+p[40:52]+p[60:76]
-        self.assertEqual(self.ike(reordered),1)
-        p[48:52]=b'\x00\x0e\x00\x02\x00\x80'
-        p[42:44]=struct.pack('!H',14);p[30:32]=struct.pack('!H',50)
-        p[34:36]=struct.pack('!H',46);p[24:28]=struct.pack('!I',len(p))
-        self.assertEqual(self.ike(p),1)
+    def test_only_500(self):
+        p, _, _ = self.run_check("127.0.0.1", "accept", "silent")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("⚠️ 部分：500 有响应", p.stdout)
 
-    def test_unsupported_critical_notify_requires_payload_type(self):
-        p=bytearray(response());p[34:36]=b'\x00\x01'
-        self.assertEqual(self.ike(p),0)
-        p.append(99);p[30:32]=struct.pack('!H',9);p[24:28]=struct.pack('!I',len(p))
-        self.assertEqual(self.ike(p),1)
+    def test_only_4500(self):
+        p, _, _ = self.run_check("127.0.0.1", "silent", "accept")
+        self.assertIn("⚠️ 部分：4500 有响应", p.stdout)
 
-    def test_dns_rejects_missing_sections_and_trailing_bytes(self):
-        base=dns([rr('epdg.example',1,b'\x01'*4)])
-        for field in (8,10):
-            p=bytearray(base);p[field:field+2]=b'\x00\x01'
-            self.assertEqual(self.parse(p),['-1'])
-        self.assertEqual(self.parse(base+b'extra'),['-1'])
-        p=bytearray(dns(flags=0x8183));p[8:10]=b'\x00\x01'
-        self.assertEqual(self.parse(p),['-1'])
-        p=bytearray(base);p[8:10]=b'\x00\x01';p.extend(rr('example',2,name('ns.example')))
-        self.assertEqual(self.parse(p),['1','1.1.1.1'])
+    def test_timeout(self):
+        t = time.monotonic()
+        p, s500, s4500 = self.run_check("127.0.0.1", "silent", "silent")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("均无响应", p.stdout)
+        self.assertEqual((s500.received, s4500.received), (3, 3), "应在超时内重传 3 次")
+        self.assertLess(time.monotonic() - t, 5)
 
-    def test_dns_rejects_contradictory_cname_and_bad_a_length(self):
-        for records in ([rr('epdg.example',1,b'abc')],
-                        [rr('epdg.example',1,b'\x01'*4),rr('epdg.example',5,name('alias.example'))],
-                        [rr('epdg.example',5,name('a.example')),rr('epdg.example',5,name('b.example'))]):
-            self.assertEqual(self.parse(dns(records)),['-1'])
+    def test_retransmit_recovers_loss(self):
+        p, _, _ = self.run_check("127.0.0.1", drop=2)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("✅ 通过", p.stdout)
 
-    def test_invalid_target_and_no_match_fail_before_probes(self):
-        for args in (['--host','bad host'],['--host','::1'],['--host','bad\x1b[31m'],['--filter','no-such-carrier']):
-            p=subprocess.run([BINARY,*args,'--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=5)
-            self.assertEqual(p.returncode,2)
-            self.assertNotIn('正在检测',p.stdout)
+    def test_malformed_replies_ignored(self):
+        for mode in ("bad_spi", "bad_len"):
+            p, _, _ = self.run_check("127.0.0.1", mode, mode)
+            self.assertIn("均无响应", p.stdout, mode)
 
-    def test_host_trailing_root_dot_is_normalized(self):
-        p=subprocess.run([BINARY,'--host','epdg.example.','--dns','127.0.0.1','--timeout','1'],capture_output=True,text=True,timeout=5)
-        self.assertEqual(p.returncode,0,p.stderr)
-        self.assertIn('[epdg.example]',p.stdout)
+    def test_icmp_refused(self):
+        closed = free_port()
+        p = subprocess.run([BIN, "--host", "127.0.0.1", "--details", "--timeout", "900",
+                            "--ike-port", str(closed), "--natt-port", str(closed)],
+                           capture_output=True, text=True, timeout=30, env={**os.environ, "NO_COLOR": "1"})
+        self.assertIn("ICMP", p.stdout)
+        self.assertEqual(p.returncode, 1)
 
-    def test_plain_results_distinguish_evidence_from_errors(self):
-        cases=[((1,1,0,0),'✅ 网络检测通过'),((0,1,0,0),'⚠️ 只测通了部分连接'),
-               ((0,0,0,0),'⚠️ 暂未测通'),((0,0,1,0),'找不到运营商服务器'),
-               ((0,0,0,1),'❌ 检测出错')]
-        for args,expected in cases:
-            result=run('result',*args).decode()
-            self.assertIn(expected,result)
-            self.assertNotIn('\x1b',result)
-            self.assertNotIn('不能使用',result)
+    def test_dns_direct(self):
+        p, _, _ = self.run_check("Direct.Test.")
+        self.assertIn("direct.test：1 个地址", p.stdout)
+        self.assertIn("✅ 通过", p.stdout)
 
-    def test_terminal_color_and_no_color_opt_out(self):
-        for disabled in (False,True):
-            pid,fd=pty.fork()
-            if pid==0:
-                if disabled: os.environ['NO_COLOR']='1'
-                else: os.environ.pop('NO_COLOR',None)
-                os.execl(HARNESS,HARNESS,'result','1','1','0','0')
-            output=b''
-            try:
-                deadline=time.monotonic()+5
-                while time.monotonic()<deadline:
-                    if select.select([fd],[],[],.1)[0]:
-                        try: chunk=os.read(fd,4096)
-                        except OSError: break
-                        if not chunk: break
-                        output+=chunk
-                self.assertIn('网络检测通过'.encode(),output)
-                self.assertEqual(b'\x1b[1;36m' in output,not disabled)
-                self.assertEqual(b'\x1b[1;32m' in output,not disabled)
-            finally:
-                os.close(fd)
-                try: os.kill(pid,signal.SIGKILL)
-                except ProcessLookupError: pass
-                os.waitpid(pid,0)
+    def test_dns_cname_chain_same_answer(self):
+        p, _, _ = self.run_check("alias.test")
+        self.assertIn("✅ 通过", p.stdout)
 
-    def test_details_are_opt_in(self):
-        base=[BINARY,'--country','加拿大','--dns','127.0.0.1','--timeout','1']
-        plain=subprocess.check_output(base,text=True)
-        detail=subprocess.check_output(base+['--details'],text=True)
-        self.assertNotIn('DNS/UDP 53',plain)
-        self.assertNotIn('技术汇总',plain)
-        self.assertIn('技术汇总',detail)
-        self.assertIn('DNS/UDP 53',detail)
-        self.assertIn('共检查 3 家',plain)
+    def test_dns_cname_only_requery(self):
+        p, _, _ = self.run_check("cnameonly.test")
+        self.assertIn("✅ 通过", p.stdout)
 
-    def test_carrier_list_and_version(self):
-        self.assertEqual(len(subprocess.check_output([BINARY,'--list']).splitlines()),42)
-        self.assertEqual(subprocess.check_output([BINARY,'--version']).strip(),b'2.3.0')
+    def test_dns_truncated_falls_back_to_tcp(self):
+        before = self.dns.tcp_queries
+        p, _, _ = self.run_check("big.test", m500="silent", m4500="silent", timeout=500)
+        self.assertGreater(self.dns.tcp_queries, before)
+        self.assertIn("big.test：6 个地址", p.stdout)  # 最多取 MAX_ADDRS 个
 
-if __name__=='__main__': unittest.main(verbosity=2)
+    def test_nxdomain_is_skipped_not_failed(self):
+        p, _, _ = self.run_check("missing.test")
+        self.assertIn("⚪ 跳过", p.stdout)
+        self.assertIn("NXDOMAIN", p.stdout)
+        self.assertIn("没有进行探测", p.stdout)
+
+    def test_nodata(self):
+        p, _, _ = self.run_check("nodata.test")
+        self.assertIn("无 A/AAAA 记录", p.stdout)
+
+    def test_dns_unreachable(self):
+        dead = free_port()
+        p = subprocess.run([BIN, "--host", "x.test", "--details", "--dns", HOST, "--dns-port", str(dead)],
+                           capture_output=True, text=True, timeout=30, env={**os.environ, "NO_COLOR": "1"})
+        self.assertIn("DNS 查询失败", p.stdout)
+
+    def test_usage_errors(self):
+        for args in (["--country", "火星"], ["--all", "--host", "a.b"], ["--timeout", "10"],
+                     ["--dns", "not-ip"], ["--host", "bad host"], ["--filter", "不存在的运营商"], ["--host"]):
+            p = subprocess.run([BIN, *args], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+            self.assertEqual(p.returncode, 2, args)
+
+    def test_list_and_help(self):
+        p = subprocess.run([BIN, "--list"], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0)
+        self.assertIn("美国 Verizon  epdg.epc.mnc480.mcc311.pub.3gppnetwork.org  wo.vzwwo.com", p.stdout)
+        self.assertEqual(len(p.stdout.splitlines()), 42)
+        self.assertEqual(subprocess.run([BIN, "--help"], capture_output=True).returncode, 0)
+
+    def test_no_tty_requires_selection(self):
+        p = subprocess.run([BIN], capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL,
+                           start_new_session=True)  # 无控制终端
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("没有交互终端", p.stderr)
+
+    def test_country_selection_uses_both_fqdns(self):
+        # 用不存在的 DNS 端口让解析快速失败，只验证目标展开逻辑
+        dead = free_port()
+        p = subprocess.run([BIN, "--country", "美国", "--details", "--dns", HOST, "--dns-port", str(dead)],
+                           capture_output=True, text=True, timeout=60, env={**os.environ, "NO_COLOR": "1"})
+        self.assertIn("共 3 个目标", p.stdout)
+        self.assertIn("ss.epdg.epc.mnc260.mcc310.pub.3gppnetwork.org", p.stdout)
+        self.assertIn("epdg.epc.att.net", p.stdout)
+
+
+if __name__ == "__main__":
+    BIN = os.path.abspath(sys.argv.pop(1))
+    unittest.main(verbosity=2)

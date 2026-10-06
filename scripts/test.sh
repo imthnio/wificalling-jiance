@@ -1,10 +1,9 @@
 #!/bin/sh
+# 编译（带 ASan/UBSan）并运行本地回环测试。
 set -eu
 cd "$(dirname "$0")/.."
-mkdir -p build
-: "${CC:=cc}"
-"$CC" -std=c99 -O2 -Wall -Wextra -Werror ${CFLAGS:-} src/check.c -o build/check
-"$CC" -std=c99 -O2 -Wall -Wextra -Werror ${CFLAGS:-} tests/harness.c -o build/harness
-sh -n check.sh
-sh -n scripts/build.sh
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+out=$(mktemp -d)
+trap 'rm -rf "$out"' 0
+${CC:-cc} -std=c99 -Wall -Wextra -Werror -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+    src/check.c -o "$out/check"
+python3 -I tests/test_check.py "$out/check"
